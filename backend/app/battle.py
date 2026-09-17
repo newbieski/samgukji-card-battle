@@ -103,6 +103,10 @@ def _card_snapshot(card: BattleCard) -> dict:
         "rarity": card.rarity,
         "hp": max(card.hp, 0),
         "max_hp": card.max_hp,
+        "mp": card.mp,
+        "max_mp": card.max_mp,
+        "atk": card.atk,
+        "skill_name": card.skill_name,
     }
 
 
@@ -217,6 +221,8 @@ def resolve_duel(card_a: BattleCard, card_b: BattleCard,
         if attacker.mp >= attacker.max_mp:
             _apply_skill(attacker, defender, attacker_label, atk_side, def_side, events)
             attacker.mp = 0
+            events[-1]["actor_mp"] = attacker.mp
+            events[-1]["actor_max_mp"] = attacker.max_mp
         else:
             hit_chance = min(0.99, BASE_HIT_CHANCE * attacker.acc_mult)
             if random.random() < hit_chance:
@@ -239,6 +245,8 @@ def resolve_duel(card_a: BattleCard, card_b: BattleCard,
                     "text": f"{attacker.name}의 공격이 빗나갔다.",
                 })
             attacker.mp = min(attacker.max_mp, attacker.mp + attacker.mp_gain_per_attack)
+            events[-1]["actor_mp"] = attacker.mp
+            events[-1]["actor_max_mp"] = attacker.max_mp
 
         if defender.hp <= 0:
             events.append({

@@ -105,6 +105,7 @@
 
       <div class="btn-row">
         <button id="btnSubmitDeck" class="btn btn-primary" disabled>이 덱으로 제출</button>
+        <button id="btnResetDeck" class="btn">덱 초기화</button>
         <button id="btnCardsBack" class="btn">로비로</button>
       </div>
     </div>
@@ -116,18 +117,31 @@
       <h2 id="battleTitle">전투</h2>
 
       <div class="battle-stage">
+        <div id="skillBanner" class="skill-banner"></div>
         <div class="fighter fighter-a">
           <img id="fighterAPortrait" class="fighter-portrait" src="" alt="">
           <div id="fighterAName" class="fighter-name">-</div>
+          <div id="fighterASkill" class="fighter-skill">-</div>
+          <div class="stat-label">HP</div>
           <div class="hp-bar-track"><div id="fighterAHpFill" class="hp-bar-fill"></div></div>
           <div id="fighterAHpText" class="hp-text">-/-</div>
+          <div class="stat-label">MP</div>
+          <div class="mp-bar-track"><div id="fighterAMpFill" class="mp-bar-fill"></div></div>
+          <div id="fighterAMpText" class="hp-text">-/-</div>
+          <div id="fighterAAtk" class="atk-text">ATK -</div>
         </div>
         <div class="battle-vs">VS</div>
         <div class="fighter fighter-b">
           <img id="fighterBPortrait" class="fighter-portrait" src="" alt="">
           <div id="fighterBName" class="fighter-name">-</div>
+          <div id="fighterBSkill" class="fighter-skill">-</div>
+          <div class="stat-label">HP</div>
           <div class="hp-bar-track"><div id="fighterBHpFill" class="hp-bar-fill"></div></div>
           <div id="fighterBHpText" class="hp-text">-/-</div>
+          <div class="stat-label">MP</div>
+          <div class="mp-bar-track"><div id="fighterBMpFill" class="mp-bar-fill"></div></div>
+          <div id="fighterBMpText" class="hp-text">-/-</div>
+          <div id="fighterBAtk" class="atk-text">ATK -</div>
         </div>
       </div>
 

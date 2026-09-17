@@ -341,6 +341,11 @@ document.getElementById("btnSubmitDeck").addEventListener("click", () => {
   showScreen("lobby");
 });
 
+document.getElementById("btnResetDeck").addEventListener("click", () => {
+  state.selectedDeck = [];
+  renderCardGrid();
+});
+
 // ---------------------------------------------------------------------------
 // 배틀 화면 (이벤트를 한 번에 하나씩 재생)
 // ---------------------------------------------------------------------------
@@ -370,33 +375,53 @@ function renderBattleResult(data) {
 
 function setFighterUI(side, fighter) {
   const nameEl = document.getElementById(`fighter${side}Name`);
+  const skillEl = document.getElementById(`fighter${side}Skill`);
   const portraitEl = document.getElementById(`fighter${side}Portrait`);
-  const fillEl = document.getElementById(`fighter${side}HpFill`);
-  const textEl = document.getElementById(`fighter${side}HpText`);
+  const hpFillEl = document.getElementById(`fighter${side}HpFill`);
+  const hpTextEl = document.getElementById(`fighter${side}HpText`);
+  const mpFillEl = document.getElementById(`fighter${side}MpFill`);
+  const mpTextEl = document.getElementById(`fighter${side}MpText`);
+  const atkEl = document.getElementById(`fighter${side}Atk`);
 
   if (!fighter) {
     nameEl.textContent = "-";
+    skillEl.textContent = "-";
     portraitEl.src = "";
-    fillEl.style.width = "0%";
-    textEl.textContent = "-/-";
+    hpFillEl.style.width = "0%";
+    hpTextEl.textContent = "-/-";
+    mpFillEl.style.width = "0%";
+    mpTextEl.textContent = "-/-";
+    atkEl.textContent = "ATK -";
     return;
   }
 
   nameEl.textContent = fighter.name;
+  skillEl.textContent = fighter.skill_name ? `「${fighter.skill_name}」` : "";
   portraitEl.src = portraitSrc(fighter.name);
   portraitEl.onerror = () => { portraitEl.onerror = null; portraitEl.src = FALLBACK_PORTRAIT; };
-  const pct = Math.max(0, Math.min(100, (fighter.hp / fighter.max_hp) * 100));
-  fillEl.style.width = `${pct}%`;
-  fillEl.classList.toggle("low", pct <= 30);
-  textEl.textContent = `${Math.max(fighter.hp, 0)}/${fighter.max_hp}`;
+
+  const hpPct = Math.max(0, Math.min(100, (fighter.hp / fighter.max_hp) * 100));
+  hpFillEl.style.width = `${hpPct}%`;
+  hpFillEl.classList.toggle("low", hpPct <= 30);
+  hpTextEl.textContent = `${Math.max(fighter.hp, 0)}/${fighter.max_hp}`;
+
+  const mpPct = fighter.max_mp ? Math.max(0, Math.min(100, (fighter.mp / fighter.max_mp) * 100)) : 0;
+  mpFillEl.style.width = `${mpPct}%`;
+  mpFillEl.classList.toggle("full", mpPct >= 100);
+  mpTextEl.textContent = `${Math.max(fighter.mp ?? 0, 0)}/${fighter.max_mp ?? 0}`;
+
+  atkEl.textContent = `ATK ${fighter.atk ?? "-"}`;
 }
+
+const FLASH_CLASSES = ["flash-hit", "flash-skill-hit", "flash-heal", "flash-buff", "flash-debuff", "flash-miss"];
 
 function flashFighter(side, kind) {
   const el = document.querySelector(`.fighter-${side.toLowerCase()}`);
   if (!el) return;
   const cls = kind === "heal" ? "flash-heal" : kind === "buff" ? "flash-buff"
-    : kind === "debuff" ? "flash-debuff" : kind === "miss" ? "flash-miss" : "flash-hit";
-  el.classList.remove("flash-hit", "flash-heal", "flash-buff", "flash-debuff", "flash-miss");
+    : kind === "debuff" ? "flash-debuff" : kind === "miss" ? "flash-miss"
+    : kind === "skill-hit" ? "flash-skill-hit" : "flash-hit";
+  el.classList.remove(...FLASH_CLASSES);
   // 강제 리플로우로 애니메이션 재시작
   void el.offsetWidth;
   el.classList.add(cls);
@@ -411,13 +436,25 @@ function lungeFighter(side) {
   el.classList.add(cls);
 }
 
-function spawnSpark(side) {
+function spawnSpark(side, isSkill) {
   const el = document.querySelector(`.fighter-${side.toLowerCase()}`);
   if (!el) return;
   const spark = document.createElement("div");
-  spark.className = "hit-spark";
+  spark.className = isSkill ? "hit-spark hit-spark-skill" : "hit-spark";
   el.appendChild(spark);
   spark.addEventListener("animationend", () => spark.remove());
+}
+
+let skillBannerTimer = null;
+
+function showSkillBanner(actorName, skillName) {
+  const banner = document.getElementById("skillBanner");
+  banner.textContent = `⚡ ${actorName}의 「${skillName}」 발동!`;
+  banner.classList.remove("show");
+  void banner.offsetWidth;
+  banner.classList.add("show");
+  clearTimeout(skillBannerTimer);
+  skillBannerTimer = setTimeout(() => banner.classList.remove("show"), 1200);
 }
 
 function appendLogLine(text, cls) {
@@ -430,6 +467,13 @@ function appendLogLine(text, cls) {
 }
 
 function applyBattleEvent(ev) {
+  const isSkill = ev.kind?.startsWith("skill_");
+
+  // 행동 주체의 MP 게이지는 공격/스킬 이벤트마다 서버가 계산해서 넘겨준다
+  if (ev.actor_side && ev.actor_mp !== undefined && battle.fighters[ev.actor_side]) {
+    battle.fighters[ev.actor_side].mp = ev.actor_mp;
+  }
+
   switch (ev.kind) {
     case "duel_start":
       battle.fighters.A = { ...ev.a };
@@ -442,8 +486,9 @@ function applyBattleEvent(ev) {
       const targetSide = ev.target_side;
       battle.fighters[targetSide].hp = ev.target_hp;
       lungeFighter(ev.actor_side);
-      flashFighter(targetSide, "hit");
-      spawnSpark(targetSide);
+      flashFighter(targetSide, isSkill ? "skill-hit" : "hit");
+      spawnSpark(targetSide, isSkill);
+      if (isSkill) showSkillBanner(ev.actor, ev.skill_name);
       appendLogLine(ev.text, "event-line");
       break;
     }
@@ -458,22 +503,26 @@ function applyBattleEvent(ev) {
     case "skill_heal": {
       battle.fighters[ev.actor_side].hp = ev.actor_hp;
       flashFighter(ev.actor_side, "heal");
+      showSkillBanner(ev.actor, ev.skill_name);
       appendLogLine(ev.text, "event-line");
       break;
     }
 
     case "skill_heal_mp":
+      showSkillBanner(ev.actor, ev.skill_name);
       appendLogLine(ev.text, "event-line");
       break;
 
     case "skill_buff":
       flashFighter(ev.actor_side, "buff");
+      showSkillBanner(ev.actor, ev.skill_name);
       appendLogLine(ev.text, "event-line");
       break;
 
     case "skill_debuff": {
       const targetSide = ev.team_wide ? (ev.actor_side === "A" ? "B" : "A") : ev.target_side;
       flashFighter(targetSide, "debuff");
+      showSkillBanner(ev.actor, ev.skill_name);
       appendLogLine(ev.text, "event-line");
       break;
     }
