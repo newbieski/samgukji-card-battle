@@ -176,11 +176,19 @@ document.getElementById("btnDraw").addEventListener("click", async () => {
   }
 });
 
+const FALLBACK_PORTRAIT = "assets/portraits/_unknown.png";
+
+function portraitSrc(name) {
+  return `assets/portraits/${encodeURIComponent(name)}.png`;
+}
+
 function renderDrawResult(result) {
   const box = document.getElementById("drawResult");
   const card = document.getElementById("drawCard");
   card.className = `card rarity-${result.rarity}`;
   card.innerHTML = `
+    <img class="card-portrait" src="${portraitSrc(result.general_name)}" alt="${result.general_name}"
+         onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
     <div class="card-name">${result.general_name}</div>
     <div class="card-rarity">${result.faction} · ${result.rarity}</div>
     <div class="card-skill"><strong>${result.skill_name}</strong><br>${result.skill_description}</div>
@@ -217,6 +225,8 @@ function renderCardGrid() {
     const selected = state.selectedDeck.includes(card.player_card_id);
     tile.className = `card-tile rarity-${card.rarity}${selected ? " selected" : ""}`;
     tile.innerHTML = `
+      <img class="tile-portrait" src="${portraitSrc(card.name)}" alt="${card.name}"
+           onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
       <div class="name">${card.name}</div>
       <div>${card.faction} · ${card.rarity}</div>
       <div>${card.skill_name}</div>

@@ -227,6 +227,16 @@ input[type="text"] {
 .card.rarity-영웅 { border-color: var(--rarity-영웅); }
 .card.rarity-전설 { border-color: var(--rarity-전설); box-shadow: 0 0 16px var(--rarity-전설); }
 
+.card-portrait {
+  width: 96px;
+  height: 120px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: #0b0620;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  margin-bottom: 8px;
+}
+
 .card-name {
   font-size: 14px;
   margin-bottom: 6px;
@@ -284,6 +294,17 @@ input[type="text"] {
 .card-tile .name {
   font-size: 11px;
   margin-bottom: 4px;
+}
+
+.tile-portrait {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  object-fit: contain;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: #0b0620;
+  margin-bottom: 6px;
 }
 
 .battle-log {

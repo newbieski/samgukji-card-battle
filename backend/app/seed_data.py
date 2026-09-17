@@ -65,9 +65,11 @@ def build_stats(name: str, rarity: str, archetype: str):
 # (name, faction, rarity, archetype, skill_name, skill_desc,
 #  skill_effect_type, skill_scope, skill_stat)
 GENERALS = [
-    # ---- 전설 (8) ----
+    # ---- 전설 (9) ----
     ("관우", "촉", "전설", "무력형", "청룡언월참", "적 단일 대상에게 무력 기반 치명적 피해와 출혈을 입힌다.",
      "damage", "enemy", None),
+    ("제갈량", "촉", "전설", "지력형", "팔진도", "아군 전체의 방어력을 크게 높이고 적 전체를 둔화시킨다.",
+     "buff", "team", "def"),
     ("장비", "촉", "전설", "무력형", "장판교의 포효", "적 전체에게 공포를 부여해 공격력을 크게 낮춘다.",
      "debuff", "enemy_team", "atk"),
     ("조운", "촉", "전설", "무력형", "단기천리 필사호위", "아군 전체를 보호하며 적 단일 대상에게 연속 공격을 가한다.",
