@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from db import get_connection, init_db
@@ -37,6 +39,16 @@ def create_player(req: CreatePlayerRequest):
     row = _create_player_row(conn, req.nickname)
     conn.close()
     return row
+
+
+@app.get("/players/{player_id}")
+def get_player(player_id: int):
+    conn = get_connection()
+    row = conn.execute("SELECT id, nickname, rings FROM players WHERE id = ?", (player_id,)).fetchone()
+    conn.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="플레이어를 찾을 수 없습니다.")
+    return dict(row)
 
 
 @app.post("/gacha/draw")
@@ -90,7 +102,7 @@ def get_player_cards(player_id: int):
     conn = get_connection()
     rows = conn.execute(
         "SELECT pc.id AS player_card_id, pc.enhance_level, pc.obtained_at, "
-        "g.name, gc.rarity, gc.hp, gc.mp, gc.atk "
+        "g.name, g.faction, g.skill_name, gc.rarity, gc.hp, gc.mp, gc.atk "
         "FROM player_cards pc "
         "JOIN general_cards gc ON gc.id = pc.general_card_id "
         "JOIN generals g ON g.id = gc.general_id "
@@ -272,3 +284,11 @@ async def room_websocket(websocket: WebSocket, room_code: str, player_id: int):
         room.players.pop(player_id, None)
         await _broadcast(room, _lobby_payload(room))
         room_manager.drop_room_if_empty(room_code)
+
+
+# ---------------------------------------------------------------------------
+# 프론트엔드 정적 파일 서빙 (반드시 API 라우트들보다 아래에 위치)
+# ---------------------------------------------------------------------------
+
+FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

@@ -17,7 +17,8 @@ MAX_PLAYERS_PER_ROOM = 4
 
 
 def _generate_room_code(existing: set) -> str:
-    alphabet = string.ascii_uppercase + string.digits
+    # 친구에게 말로 불러줄 때 헷갈리는 0/O, 1/I 는 제외
+    alphabet = "".join(c for c in string.ascii_uppercase + string.digits if c not in "0O1I")
     while True:
         code = "".join(random.choices(alphabet, k=6))
         if code not in existing:
