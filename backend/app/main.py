@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from db import get_connection, init_db
 from gacha import GACHA_COST, perform_draw
 from battle import build_battle_card, simulate_deck_battle
+from rooms import manager as room_manager, RoomPlayer, Room
 
 
 @asynccontextmanager
@@ -21,16 +22,21 @@ class CreatePlayerRequest(BaseModel):
     nickname: str
 
 
-@app.post("/players")
-def create_player(req: CreatePlayerRequest):
-    conn = get_connection()
+def _create_player_row(conn, nickname: str) -> dict:
     cur = conn.cursor()
-    cur.execute("INSERT INTO players (nickname) VALUES (?)", (req.nickname,))
+    cur.execute("INSERT INTO players (nickname) VALUES (?)", (nickname,))
     conn.commit()
     player_id = cur.lastrowid
     row = conn.execute("SELECT id, nickname, rings FROM players WHERE id = ?", (player_id,)).fetchone()
-    conn.close()
     return dict(row)
+
+
+@app.post("/players")
+def create_player(req: CreatePlayerRequest):
+    conn = get_connection()
+    row = _create_player_row(conn, req.nickname)
+    conn.close()
+    return row
 
 
 @app.post("/gacha/draw")
@@ -131,3 +137,138 @@ def battle_simulate(req: BattleRequest):
     conn.close()
 
     return simulate_deck_battle(deck_a, deck_b)
+
+
+# ---------------------------------------------------------------------------
+# 방(로비) - 방 코드 생성/초대 기반 멀티플레이
+# ---------------------------------------------------------------------------
+
+class CreateRoomRequest(BaseModel):
+    nickname: str
+
+
+class JoinRoomRequest(BaseModel):
+    nickname: str
+
+
+@app.post("/rooms")
+def create_room(req: CreateRoomRequest):
+    conn = get_connection()
+    player = _create_player_row(conn, req.nickname)
+    conn.close()
+
+    room = room_manager.create_room(player["id"], player["nickname"])
+    return {"room_code": room.code, "player_id": player["id"], "nickname": player["nickname"]}
+
+
+@app.post("/rooms/{room_code}/join")
+def join_room(room_code: str, req: JoinRoomRequest):
+    room = room_manager.get_room(room_code)
+    if room is None:
+        raise HTTPException(status_code=404, detail="존재하지 않는 방입니다.")
+    if room.is_full():
+        raise HTTPException(status_code=400, detail="방 인원이 가득 찼습니다.")
+
+    conn = get_connection()
+    player = _create_player_row(conn, req.nickname)
+    conn.close()
+
+    room.players[player["id"]] = RoomPlayer(player_id=player["id"], nickname=player["nickname"])
+    return {"room_code": room.code, "player_id": player["id"], "nickname": player["nickname"]}
+
+
+def _lobby_payload(room: Room) -> dict:
+    return {
+        "type": "lobby_update",
+        "room_code": room.code,
+        "host_player_id": room.host_player_id,
+        "players": [
+            {
+                "player_id": p.player_id,
+                "nickname": p.nickname,
+                "ready": p.ready,
+                "deck_submitted": p.deck is not None,
+            }
+            for p in room.players.values()
+        ],
+    }
+
+
+async def _broadcast(room: Room, payload: dict) -> None:
+    for player in list(room.players.values()):
+        if player.websocket is not None:
+            try:
+                await player.websocket.send_json(payload)
+            except Exception:
+                pass
+
+
+async def _maybe_run_battle(room: Room) -> None:
+    contenders = [p for p in room.players.values() if p.deck is not None]
+    if len(contenders) < 2:
+        return
+    if len(contenders) > 2:
+        await _broadcast(room, {
+            "type": "error",
+            "message": "지금은 2명 대결(PvP)만 지원합니다. 협동전은 준비 중입니다.",
+        })
+        return
+
+    p1, p2 = contenders
+    conn = get_connection()
+    try:
+        deck_a = _load_deck(conn, p1.deck)
+        deck_b = _load_deck(conn, p2.deck)
+    finally:
+        conn.close()
+
+    result = simulate_deck_battle(deck_a, deck_b)
+    winner_nickname = p1.nickname if result["winner"] == "A" else p2.nickname
+
+    await _broadcast(room, {
+        "type": "battle_result",
+        "player_a": p1.nickname,
+        "player_b": p2.nickname,
+        "winner_nickname": winner_nickname,
+        **result,
+    })
+
+    for p in room.players.values():
+        p.deck = None
+        p.ready = False
+
+
+@app.websocket("/ws/rooms/{room_code}")
+async def room_websocket(websocket: WebSocket, room_code: str, player_id: int):
+    room = room_manager.get_room(room_code)
+    if room is None or player_id not in room.players:
+        await websocket.close(code=4404)
+        return
+
+    await websocket.accept()
+    player = room.players[player_id]
+    player.websocket = websocket
+    await _broadcast(room, _lobby_payload(room))
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type")
+
+            if msg_type == "ready":
+                player.ready = not player.ready
+                await _broadcast(room, _lobby_payload(room))
+
+            elif msg_type == "submit_deck":
+                deck = data.get("deck")
+                if not isinstance(deck, list) or len(deck) != 5:
+                    await websocket.send_json({"type": "error", "message": "덱은 5장이어야 합니다."})
+                    continue
+                player.deck = deck
+                await _broadcast(room, _lobby_payload(room))
+                await _maybe_run_battle(room)
+
+    except WebSocketDisconnect:
+        room.players.pop(player_id, None)
+        await _broadcast(room, _lobby_payload(room))
+        room_manager.drop_room_if_empty(room_code)
