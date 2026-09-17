@@ -9,18 +9,14 @@ os.makedirs(SHOT_DIR, exist_ok=True)
 
 
 def draw_five(page):
-    page.click("#btnGoGacha")
-    page.wait_for_selector("#screen-gacha:not(.hidden)")
+    page.click("#btnGoCards")
+    page.wait_for_selector("#screen-cards:not(.hidden)")
     for _ in range(5):
         page.click("#btnDraw")
         page.wait_for_selector("#drawResult:not(.hidden)")
-    page.click("#btnGachaBack")
-    page.wait_for_selector("#screen-lobby:not(.hidden)")
 
 
 def submit_deck(page):
-    page.click("#btnGoCollection")
-    page.wait_for_selector("#screen-collection:not(.hidden)")
     tiles = page.query_selector_all(".card-tile")
     for tile in tiles[:5]:
         tile.click()

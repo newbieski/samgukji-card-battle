@@ -400,24 +400,42 @@ input[type="text"] {
 
 .battle-stage {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 12px;
+  padding: 20px 12px 12px;
+  border: 4px solid var(--panel-border);
+  background-image: url("assets/scenes/battlefield.png");
+  background-size: cover;
+  background-position: center;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  position: relative;
+}
+
+.battle-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(11, 6, 32, 0.15), rgba(11, 6, 32, 0.65));
 }
 
 .fighter {
   flex: 1;
+  max-width: 220px;
   text-align: center;
   padding: 10px;
-  background: #140c29;
+  background: rgba(20, 12, 41, 0.85);
   border: 3px solid var(--panel-border);
-  transition: background-color 0.15s;
+  transition: background-color 0.15s, transform 0.18s ease-out;
+  position: relative;
+  z-index: 1;
 }
 
 .fighter-portrait {
   width: 100%;
-  max-width: 120px;
+  max-width: 180px;
   aspect-ratio: 4 / 5;
   object-fit: contain;
   image-rendering: pixelated;
@@ -427,7 +445,7 @@ input[type="text"] {
 }
 
 .fighter-name {
-  font-size: 10px;
+  font-size: 11px;
   margin-bottom: 8px;
 }
 
@@ -500,3 +518,124 @@ input[type="text"] {
 .fighter.flash-buff { animation: flash-buff 0.4s ease-out; }
 .fighter.flash-debuff { animation: flash-debuff 0.4s ease-out; }
 .fighter.flash-miss { animation: flash-miss 0.4s ease-out; }
+
+@keyframes lunge-right {
+  0% { transform: translateX(0); }
+  40% { transform: translateX(18px); }
+  100% { transform: translateX(0); }
+}
+
+@keyframes lunge-left {
+  0% { transform: translateX(0); }
+  40% { transform: translateX(-18px); }
+  100% { transform: translateX(0); }
+}
+
+.fighter.lunge-right { animation: lunge-right 0.3s ease-out; }
+.fighter.lunge-left { animation: lunge-left 0.3s ease-out; }
+
+@keyframes hit-spark-burst {
+  0% { transform: translate(-50%, -50%) scale(0.2); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(2.2); opacity: 0; }
+}
+
+.hit-spark {
+  position: absolute;
+  top: 45%;
+  left: 50%;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff6c9 0%, #ffcb47 35%, rgba(255, 107, 107, 0.6) 65%, transparent 75%);
+  pointer-events: none;
+  z-index: 2;
+  animation: hit-spark-burst 0.35s ease-out forwards;
+}
+
+.battle-controls {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+
+.battle-log {
+  max-height: 220px;
+}
+
+/* 링 구매 모달 */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(11, 6, 32, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 16px;
+}
+
+.modal-box {
+  width: 100%;
+  max-width: 380px;
+  background: var(--panel);
+  border: 4px solid var(--accent);
+  padding: 20px;
+  box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.4);
+}
+
+.modal-box h2 {
+  font-size: 13px;
+  color: var(--accent);
+  margin-top: 0;
+}
+
+.shop-packages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.shop-package-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  text-align: left;
+}
+
+.shop-price {
+  color: var(--accent);
+  font-size: 9px;
+}
+
+/* 뽑기 + 카드 화면 */
+
+.gacha-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 2px dashed var(--panel-border);
+}
+
+.gacha-controls {
+  flex: 1;
+  min-width: 180px;
+}
+
+.gacha-bar .draw-result {
+  flex: 1;
+  min-width: 200px;
+  margin-top: 0;
+}
+
+.card-compact {
+  padding: 10px;
+}
+
+.card-compact .card-portrait {
+  width: 72px;
+  height: 90px;
+}

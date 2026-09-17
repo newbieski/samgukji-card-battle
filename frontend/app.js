@@ -182,37 +182,70 @@ document.getElementById("btnToggleReady").addEventListener("click", () => {
   state.ws?.send(JSON.stringify({ type: "ready" }));
 });
 
-document.getElementById("btnGoGacha").addEventListener("click", () => {
-  showScreen("gacha");
-});
-
-document.getElementById("btnGachaBack").addEventListener("click", () => {
-  refreshRings();
-  showScreen("lobby");
-});
-
-document.getElementById("btnGoCollection").addEventListener("click", async () => {
+document.getElementById("btnGoCards").addEventListener("click", async () => {
   await loadCollection();
-  showScreen("collection");
+  showScreen("cards");
 });
 
-document.getElementById("btnCollectionBack").addEventListener("click", () => {
+document.getElementById("btnCardsBack").addEventListener("click", () => {
   showScreen("lobby");
 });
 
 // ---------------------------------------------------------------------------
-// 가챠 화면
+// 링 구매 (임시 mock 결제)
+// ---------------------------------------------------------------------------
+
+async function openShop() {
+  const box = document.getElementById("shopPackages");
+  box.innerHTML = `<p class="hint">불러오는 중...</p>`;
+  document.getElementById("shopOverlay").classList.remove("hidden");
+  try {
+    const packages = await api("/ring-packages");
+    box.innerHTML = "";
+    packages.forEach((pkg) => {
+      const btn = document.createElement("button");
+      btn.className = "btn shop-package-btn";
+      btn.innerHTML = `<span>${pkg.rings}링</span><span class="shop-price">${pkg.price_label}</span>`;
+      btn.addEventListener("click", () => purchaseRings(pkg.package_id));
+      box.appendChild(btn);
+    });
+  } catch (e) {
+    box.innerHTML = `<p class="error-text">상품 목록을 불러오지 못했습니다.</p>`;
+  }
+}
+
+async function purchaseRings(packageId) {
+  try {
+    const result = await api(`/players/${state.playerId}/purchase_rings`, {
+      method: "POST",
+      body: JSON.stringify({ package_id: packageId }),
+    });
+    state.rings = result.remaining_rings;
+    updatePlayerInfoBar();
+    document.getElementById("shopOverlay").classList.add("hidden");
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+document.getElementById("btnOpenShop").addEventListener("click", openShop);
+document.getElementById("btnCloseShop").addEventListener("click", () => {
+  document.getElementById("shopOverlay").classList.add("hidden");
+});
+
+// ---------------------------------------------------------------------------
+// 뽑기
 // ---------------------------------------------------------------------------
 
 const RARITY_ORDER = { 일반: 0, 희귀: 1, 영웅: 2, 전설: 3 };
 
 document.getElementById("btnDraw").addEventListener("click", async () => {
-  const errorEl = document.getElementById("entryError");
   try {
     const result = await api(`/gacha/draw?player_id=${state.playerId}`, { method: "POST" });
     state.rings = result.remaining_rings;
     updatePlayerInfoBar();
     renderDrawResult(result);
+    await loadCollection();
   } catch (e) {
     alert(e.message);
   }
@@ -250,7 +283,8 @@ function renderDrawResult(result) {
 
 async function loadCollection() {
   state.cards = await api(`/players/${state.playerId}/cards`);
-  state.selectedDeck = [];
+  const validIds = new Set(state.cards.map((c) => c.player_card_id));
+  state.selectedDeck = state.selectedDeck.filter((id) => validIds.has(id));
   renderCardGrid();
 }
 
@@ -368,6 +402,24 @@ function flashFighter(side, kind) {
   el.classList.add(cls);
 }
 
+function lungeFighter(side) {
+  const el = document.querySelector(`.fighter-${side.toLowerCase()}`);
+  if (!el) return;
+  const cls = side === "A" ? "lunge-right" : "lunge-left";
+  el.classList.remove("lunge-right", "lunge-left");
+  void el.offsetWidth;
+  el.classList.add(cls);
+}
+
+function spawnSpark(side) {
+  const el = document.querySelector(`.fighter-${side.toLowerCase()}`);
+  if (!el) return;
+  const spark = document.createElement("div");
+  spark.className = "hit-spark";
+  el.appendChild(spark);
+  spark.addEventListener("animationend", () => spark.remove());
+}
+
 function appendLogLine(text, cls) {
   const logEl = document.getElementById("battleLog");
   const span = document.createElement("span");
@@ -389,12 +441,15 @@ function applyBattleEvent(ev) {
     case "skill_damage": {
       const targetSide = ev.target_side;
       battle.fighters[targetSide].hp = ev.target_hp;
+      lungeFighter(ev.actor_side);
       flashFighter(targetSide, "hit");
+      spawnSpark(targetSide);
       appendLogLine(ev.text, "event-line");
       break;
     }
 
     case "miss": {
+      lungeFighter(ev.actor_side);
       flashFighter(ev.target_side, "miss");
       appendLogLine(ev.text, "event-line");
       break;

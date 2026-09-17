@@ -15,8 +15,21 @@
   <div id="playerInfo" class="player-info hidden">
     <span id="playerNickname"></span>
     <span id="playerRings" class="rings"></span>
+    <button id="btnOpenShop" class="btn btn-small">링 구매</button>
   </div>
 </header>
+
+<!-- 링 구매 모달 (임시 mock 결제, 나중에 실결제로 교체) -->
+<div id="shopOverlay" class="modal-overlay hidden">
+  <div class="modal-box">
+    <h2>링 구매</h2>
+    <p class="hint">※ 지금은 결제 없이 바로 지급되는 테스트 기능입니다.</p>
+    <div id="shopPackages" class="shop-packages"></div>
+    <div class="btn-row">
+      <button id="btnCloseShop" class="btn">닫기</button>
+    </div>
+  </div>
+</div>
 
 <main>
 
@@ -63,43 +76,36 @@
 
       <div class="btn-row">
         <button id="btnToggleReady" class="btn">준비</button>
-        <button id="btnGoGacha" class="btn">가챠 뽑기</button>
-        <button id="btnGoCollection" class="btn">카드/덱</button>
+        <button id="btnGoCards" class="btn">뽑기 / 덱 편성</button>
       </div>
 
       <p id="lobbyStatus" class="hint"></p>
     </div>
   </section>
 
-  <!-- 가챠 화면 -->
-  <section id="screen-gacha" class="screen hidden">
-    <div class="panel">
-      <h2>링(가챠) 뽑기</h2>
-      <p class="hint">1회 100링 · 일반60% / 희귀30% / 영웅8% / 전설2%</p>
-
-      <button id="btnDraw" class="btn btn-primary">뽑기 (100링)</button>
-
-      <div id="drawResult" class="draw-result hidden">
-        <div id="drawCard" class="card"></div>
-      </div>
-
-      <div class="btn-row">
-        <button id="btnGachaBack" class="btn">로비로</button>
-      </div>
-    </div>
-  </section>
-
-  <!-- 카드 보관함 / 덱 편성 화면 -->
-  <section id="screen-collection" class="screen hidden">
+  <!-- 뽑기 + 카드 보관함/덱 편성 (한 화면) -->
+  <section id="screen-cards" class="screen hidden">
     <div class="panel wide">
-      <h2>카드 보관함</h2>
-      <p class="hint">덱으로 쓸 장수 5명을 선택하세요 (<span id="deckCount">0</span>/5)</p>
+      <h2>카드</h2>
 
+      <div class="gacha-bar">
+        <div class="gacha-controls">
+          <p class="hint no-margin">1회 100링 · 일반60% / 희귀30% / 영웅8% / 전설2%</p>
+          <div class="btn-row">
+            <button id="btnDraw" class="btn btn-primary">뽑기 (100링)</button>
+          </div>
+        </div>
+        <div id="drawResult" class="draw-result hidden">
+          <div id="drawCard" class="card card-compact"></div>
+        </div>
+      </div>
+
+      <p class="hint">덱으로 쓸 장수 5명을 선택하세요 (<span id="deckCount">0</span>/5)</p>
       <div id="cardGrid" class="card-grid"></div>
 
       <div class="btn-row">
         <button id="btnSubmitDeck" class="btn btn-primary" disabled>이 덱으로 제출</button>
-        <button id="btnCollectionBack" class="btn">로비로</button>
+        <button id="btnCardsBack" class="btn">로비로</button>
       </div>
     </div>
   </section>
@@ -126,13 +132,14 @@
       </div>
 
       <div id="battleEventText" class="battle-event-text">전투 시작 대기 중...</div>
-      <div id="battleLog" class="battle-log"></div>
 
-      <div class="btn-row">
+      <div class="btn-row battle-controls">
         <button id="btnBattleNext" class="btn btn-primary">다음</button>
         <button id="btnBattleSkip" class="btn">전체 보기</button>
         <button id="btnBattleBack" class="btn hidden">로비로</button>
       </div>
+
+      <div id="battleLog" class="battle-log"></div>
     </div>
   </section>
 

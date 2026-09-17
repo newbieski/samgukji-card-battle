@@ -51,6 +51,48 @@ def get_player(player_id: int):
     return dict(row)
 
 
+# 링(재화) 구매 - 지금은 실제 결제 없이 즉시 지급하는 임시(mock) 기능.
+# 나중에 실제 결제(PG 연동)로 교체할 자리이며, 그때는 이 PACKAGES 구조와
+# 엔드포인트 시그니처를 그대로 활용하면 된다.
+RING_PACKAGES = {
+    "small": {"rings": 500, "price_label": "₩1,200 (예시가)"},
+    "medium": {"rings": 1200, "price_label": "₩2,900 (예시가)"},
+    "large": {"rings": 3300, "price_label": "₩6,900 (예시가, 보너스 300링 포함)"},
+}
+
+
+@app.get("/ring-packages")
+def get_ring_packages():
+    return [{"package_id": pid, **info} for pid, info in RING_PACKAGES.items()]
+
+
+class PurchaseRingsRequest(BaseModel):
+    package_id: str
+
+
+@app.post("/players/{player_id}/purchase_rings")
+def purchase_rings(player_id: int, req: PurchaseRingsRequest):
+    package = RING_PACKAGES.get(req.package_id)
+    if package is None:
+        raise HTTPException(status_code=400, detail="존재하지 않는 상품입니다.")
+
+    conn = get_connection()
+    player = conn.execute("SELECT * FROM players WHERE id = ?", (player_id,)).fetchone()
+    if player is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="플레이어를 찾을 수 없습니다.")
+
+    conn.execute(
+        "UPDATE players SET rings = rings + ? WHERE id = ?",
+        (package["rings"], player_id),
+    )
+    conn.commit()
+    remaining = conn.execute("SELECT rings FROM players WHERE id = ?", (player_id,)).fetchone()["rings"]
+    conn.close()
+
+    return {"purchased_rings": package["rings"], "remaining_rings": remaining}
+
+
 @app.post("/gacha/draw")
 def gacha_draw(player_id: int):
     conn = get_connection()

@@ -35,17 +35,12 @@ def main():
         page.wait_for_function("document.querySelector('#roomCodeLabel').textContent !== '------'")
         shot(page, "02_lobby")
 
-        page.click("#btnGoGacha")
-        page.wait_for_selector("#screen-gacha:not(.hidden)")
+        page.click("#btnGoCards")
+        page.wait_for_selector("#screen-cards:not(.hidden)")
         page.click("#btnDraw")
         page.wait_for_selector("#drawResult:not(.hidden)")
         shot(page, "03_gacha_result")
 
-        page.click("#btnGachaBack")
-        page.wait_for_selector("#screen-lobby:not(.hidden)")
-
-        page.click("#btnGoCollection")
-        page.wait_for_selector("#screen-collection:not(.hidden)")
         page.wait_for_selector(".card-tile")
         shot(page, "04_collection_before_select")
 
@@ -57,6 +52,13 @@ def main():
 
         submit_btn = page.query_selector("#btnSubmitDeck")
         print("submit disabled:", submit_btn.is_disabled())
+
+        page.click("#btnOpenShop")
+        page.wait_for_selector("#shopOverlay:not(.hidden)")
+        page.wait_for_selector(".shop-package-btn")
+        shot(page, "06_shop")
+        page.click(".shop-package-btn")
+        page.wait_for_selector("#shopOverlay", state="hidden")
 
         print("console errors:", console_errors)
         browser.close()
