@@ -38,6 +38,7 @@ class RoomPlayer:
 class Room:
     code: str
     host_player_id: int
+    title: str = "이름없는 방"
     players: dict = field(default_factory=dict)  # player_id -> RoomPlayer
 
     def is_full(self) -> bool:
@@ -48,15 +49,18 @@ class RoomManager:
     def __init__(self):
         self.rooms: dict[str, Room] = {}
 
-    def create_room(self, host_player_id: int, host_nickname: str) -> Room:
+    def create_room(self, host_player_id: int, host_nickname: str, title: str) -> Room:
         code = _generate_room_code(set(self.rooms.keys()))
-        room = Room(code=code, host_player_id=host_player_id)
+        room = Room(code=code, host_player_id=host_player_id, title=title.strip() or "이름없는 방")
         room.players[host_player_id] = RoomPlayer(player_id=host_player_id, nickname=host_nickname)
         self.rooms[code] = room
         return room
 
     def get_room(self, code: str) -> Room | None:
         return self.rooms.get(code)
+
+    def list_rooms(self) -> list[Room]:
+        return list(self.rooms.values())
 
     def drop_room_if_empty(self, code: str) -> None:
         room = self.rooms.get(code)

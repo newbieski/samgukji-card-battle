@@ -26,7 +26,7 @@ def get(path):
 
 
 async def main():
-    host = post("/rooms", {"nickname": "host_kim"})
+    host = post("/rooms", {"nickname": "host_kim", "title": "테스트 방"})
     print("room created:", host)
     room_code = host["room_code"]
 

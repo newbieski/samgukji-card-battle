@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from db import get_connection, init_db
 from gacha import GACHA_COST, perform_draw
 from battle import build_battle_card, simulate_deck_battle
-from rooms import manager as room_manager, RoomPlayer, Room
+from rooms import manager as room_manager, RoomPlayer, Room, MAX_PLAYERS_PER_ROOM
 
 
 @asynccontextmanager
@@ -157,10 +157,26 @@ def battle_simulate(req: BattleRequest):
 
 class CreateRoomRequest(BaseModel):
     nickname: str
+    title: str
 
 
 class JoinRoomRequest(BaseModel):
     nickname: str
+
+
+@app.get("/rooms")
+def list_rooms():
+    return [
+        {
+            "room_code": room.code,
+            "title": room.title,
+            "player_count": len(room.players),
+            "max_players": MAX_PLAYERS_PER_ROOM,
+            "in_battle": any(p.deck is not None for p in room.players.values()),
+        }
+        for room in room_manager.list_rooms()
+        if not room.is_full()
+    ]
 
 
 @app.post("/rooms")
@@ -169,8 +185,13 @@ def create_room(req: CreateRoomRequest):
     player = _create_player_row(conn, req.nickname)
     conn.close()
 
-    room = room_manager.create_room(player["id"], player["nickname"])
-    return {"room_code": room.code, "player_id": player["id"], "nickname": player["nickname"]}
+    room = room_manager.create_room(player["id"], player["nickname"], req.title)
+    return {
+        "room_code": room.code,
+        "title": room.title,
+        "player_id": player["id"],
+        "nickname": player["nickname"],
+    }
 
 
 @app.post("/rooms/{room_code}/join")
@@ -186,13 +207,19 @@ def join_room(room_code: str, req: JoinRoomRequest):
     conn.close()
 
     room.players[player["id"]] = RoomPlayer(player_id=player["id"], nickname=player["nickname"])
-    return {"room_code": room.code, "player_id": player["id"], "nickname": player["nickname"]}
+    return {
+        "room_code": room.code,
+        "title": room.title,
+        "player_id": player["id"],
+        "nickname": player["nickname"],
+    }
 
 
 def _lobby_payload(room: Room) -> dict:
     return {
         "type": "lobby_update",
         "room_code": room.code,
+        "title": room.title,
         "host_player_id": room.host_player_id,
         "players": [
             {

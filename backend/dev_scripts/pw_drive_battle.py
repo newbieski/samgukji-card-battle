@@ -34,6 +34,7 @@ def main():
         page_a = browser.new_page(viewport={"width": 480, "height": 900})
         page_a.goto(BASE)
         page_a.fill("#nicknameInput", "호스트")
+        page_a.fill("#roomTitleInput", "테스트 방")
         page_a.click("#btnCreateRoom")
         page_a.wait_for_function("document.querySelector('#roomCodeLabel').textContent !== '------'")
         room_code = page_a.text_content("#roomCodeLabel")
@@ -58,10 +59,19 @@ def main():
         page_a.wait_for_selector("#screen-battle:not(.hidden)", timeout=10000)
         page_b.wait_for_selector("#screen-battle:not(.hidden)", timeout=10000)
 
-        page_a.screenshot(path=f"{SHOT_DIR}/battle_02_result_host.png")
-        page_b.screenshot(path=f"{SHOT_DIR}/battle_03_result_guest.png")
+        page_a.click("#btnBattleNext")
+        page_a.screenshot(path=f"{SHOT_DIR}/battle_02_first_step.png")
+
+        page_a.click("#btnBattleSkip")
+        page_a.wait_for_selector("#btnBattleBack:not(.hidden)")
+        page_a.screenshot(path=f"{SHOT_DIR}/battle_03_result_host.png")
+
+        page_b.click("#btnBattleSkip")
+        page_b.wait_for_selector("#btnBattleBack:not(.hidden)")
+        page_b.screenshot(path=f"{SHOT_DIR}/battle_04_result_guest.png")
 
         print("battle title (host view):", page_a.text_content("#battleTitle"))
+        print("event text (host view):", page_a.text_content("#battleEventText"))
         browser.close()
 
 

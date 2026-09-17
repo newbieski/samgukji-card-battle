@@ -28,6 +28,7 @@ def main():
         shot(page, "01_entry")
 
         page.fill("#nicknameInput", "테스터")
+        page.fill("#roomTitleInput", "테스터의 방")
         page.click("#btnCreateRoom")
 
         page.wait_for_selector("#screen-lobby:not(.hidden)")

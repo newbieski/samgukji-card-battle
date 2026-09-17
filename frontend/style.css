@@ -334,3 +334,169 @@ input[type="text"] {
   display: block;
   color: #cfc4ff;
 }
+
+/* 방 목록 */
+
+.no-margin {
+  margin-top: 0;
+}
+
+.room-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 20px;
+}
+
+.btn-small {
+  flex: none;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 8px;
+}
+
+.room-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.room-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  background: #140c29;
+  border: 2px solid var(--panel-border);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.room-list-item:hover {
+  border-color: var(--accent);
+}
+
+.room-list-count {
+  color: var(--accent);
+}
+
+.room-list-empty {
+  color: #8a7bc4;
+  font-size: 9px;
+  padding: 8px 0;
+}
+
+.room-title-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+/* 배틀 화면 */
+
+.battle-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.fighter {
+  flex: 1;
+  text-align: center;
+  padding: 10px;
+  background: #140c29;
+  border: 3px solid var(--panel-border);
+  transition: background-color 0.15s;
+}
+
+.fighter-portrait {
+  width: 100%;
+  max-width: 120px;
+  aspect-ratio: 4 / 5;
+  object-fit: contain;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: #0b0620;
+  margin-bottom: 6px;
+}
+
+.fighter-name {
+  font-size: 10px;
+  margin-bottom: 8px;
+}
+
+.hp-bar-track {
+  height: 10px;
+  background: #3a2c22;
+  border: 2px solid #000;
+}
+
+.hp-bar-fill {
+  height: 100%;
+  background: #4fd18b;
+  width: 100%;
+  transition: width 0.25s ease-out;
+}
+
+.hp-bar-fill.low {
+  background: var(--danger);
+}
+
+.hp-text {
+  font-size: 8px;
+  margin-top: 4px;
+  color: #cfc4ff;
+}
+
+.battle-vs {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.battle-event-text {
+  min-height: 2.4em;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text);
+  padding: 8px;
+  margin-bottom: 8px;
+  background: #140c29;
+  border: 2px solid var(--panel-border);
+}
+
+@keyframes flash-hit {
+  0% { background-color: #6b1f2a; }
+  100% { background-color: #140c29; }
+}
+
+@keyframes flash-heal {
+  0% { background-color: #1f6b3a; }
+  100% { background-color: #140c29; }
+}
+
+@keyframes flash-buff {
+  0% { background-color: #1f4a6b; }
+  100% { background-color: #140c29; }
+}
+
+@keyframes flash-debuff {
+  0% { background-color: #4a1f6b; }
+  100% { background-color: #140c29; }
+}
+
+@keyframes flash-miss {
+  0% { background-color: #3a3a3a; }
+  100% { background-color: #140c29; }
+}
+
+.fighter.flash-hit { animation: flash-hit 0.4s ease-out; }
+.fighter.flash-heal { animation: flash-heal 0.4s ease-out; }
+.fighter.flash-buff { animation: flash-buff 0.4s ease-out; }
+.fighter.flash-debuff { animation: flash-debuff 0.4s ease-out; }
+.fighter.flash-miss { animation: flash-miss 0.4s ease-out; }

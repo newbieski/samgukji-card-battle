@@ -50,6 +50,11 @@
 - 스킬 발동: 기본 공격마다 MP가 차오르고, MP가 가득 차면 그 턴에 고유 스킬이 자동 발동 (게이지형)
 - 고유 스킬은 damage(피해) / heal(회복) / buff(아군 강화) / debuff(적 약화) 4가지 효과로 구현
   (세부 효과 매핑은 `backend/app/seed_data.py`, 전투 계산은 `backend/app/battle.py` 참고)
+- 전투 결과는 문자열 로그가 아니라 구조화된 이벤트 목록(`events`)으로 반환 — 각 이벤트가
+  행동 주체/대상/수치/결과 HP를 담고 있어 프론트에서 한 번에 하나씩 재생 가능
+- 프론트: 배틀 화면에서 "다음" 버튼으로 이벤트를 한 스텝씩 확인하거나 "전체 보기"로 스킵
+  가능. 두 장수 초상화 + HP바를 보여주고, 피격/회복/버프/디버프/빗나감마다 다른 색 플래시
+  애니메이션으로 액션 연출 (`frontend/app.js`의 `applyBattleEvent`)
 - 구현/테스트 완료: `POST /battle/simulate` 로 5:5 덱 배틀 시뮬레이션 가능
 
 ### PvE (협동)
@@ -68,13 +73,17 @@
 
 ### 구현 (백엔드, `backend/app/rooms.py` + `main.py`)
 - 방 상태(플레이어 목록/웹소켓 연결)는 서버 메모리에만 보관, 플레이어/카드는 SQLite에 영속
-- `POST /rooms` {nickname} → 방 생성 (방장), room_code 발급
+- 방 생성 시 제목을 함께 지정 (`title`), 방 코드와 별개로 목록에서 사람이 알아볼 수 있게 함
+- `GET /rooms` → 입장 가능한(꽉 차지 않은) 방 목록: 제목 + (현재인원/최대인원)
+- `POST /rooms` {nickname, title} → 방 생성 (방장), room_code 발급
 - `POST /rooms/{room_code}/join` {nickname} → 방 코드로 입장
 - `WS /ws/rooms/{room_code}?player_id=...` → 실시간 연결
-  - 서버→클라이언트: `lobby_update`(인원/준비 상태), `battle_result`(전투 로그+승자), `error`
+  - 서버→클라이언트: `lobby_update`(제목/인원/준비 상태), `battle_result`(전투 이벤트+승자), `error`
   - 클라이언트→서버: `{"type":"ready"}`, `{"type":"submit_deck","deck":[player_card_id x5]}`
   - 정확히 2명이 덱을 제출하면 자동으로 `battle.py` 시뮬레이션이 돌고 결과가 방 전체에 브로드캐스트됨
-- 동작 확인: `backend/dev_scripts/smoke_test_rooms.py`로 방 생성→입장→로비 동기화→배틀 결과 전체 플로우 테스트 완료
+- 프론트 입장 화면: 방 코드 직접 입력 또는 방 목록에서 클릭으로 바로 참가 가능
+- 동작 확인: `backend/dev_scripts/smoke_test_rooms.py`, `pw_drive_battle.py`로 방 생성→입장→
+  로비 동기화→가챠→덱 제출→배틀 결과(단계별 재생 포함) 전체 플로우 테스트 완료
 
 ## 6. 기술 스택 (초기)
 - 백엔드: Python (FastAPI + WebSocket 계열)
@@ -91,7 +100,6 @@
 4. ~~프론트엔드 화면 연결 (닉네임/방 생성·참가, 로비, 가챠, 카드 보관함·덱 편성, 배틀 결과)~~ (완료)
 
 ## 8. 상태
-가챠 + PvP 배틀 엔진 + 방(로비)/웹소켓 멀티플레이 + 프론트엔드까지 전 구간 연결 완료.
-`backend/dev_scripts/pw_drive_battle.py`로 두 플레이어가 방 생성→참가→가챠→덱 제출→배틀 결과 화면까지
-실제 브라우저(Playwright)로 확인함.
-다음은 밸런스 조정, PvE 협동전 엔진, 강화(재료) 시스템, 클라우드 배포 중에서 정하면 됨.
+가챠 + PvP 배틀 엔진(사용자 입력 기반 단계별 재생 + 액션 연출) + 방 제목/목록이 있는
+로비·웹소켓 멀티플레이 + 일러스트(Bedrock 생성) + 프론트엔드까지 전 구간 연결 완료.
+다음은 PvE 협동전 엔진, 강화(재료) 시스템, 링 유료결제, 클라우드 배포 중에서 정하면 됨.

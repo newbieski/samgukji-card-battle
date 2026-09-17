@@ -22,23 +22,31 @@
 
   <!-- 입장 화면 -->
   <section id="screen-entry" class="screen">
-    <div class="panel">
+    <div class="panel wide">
       <label>닉네임</label>
       <input id="nicknameInput" type="text" maxlength="12" placeholder="닉네임을 입력하세요">
 
+      <label>방 제목</label>
+      <input id="roomTitleInput" type="text" maxlength="20" placeholder="방 제목 (방 만들기에서 사용)">
       <div class="btn-row">
         <button id="btnCreateRoom" class="btn btn-primary">방 만들기</button>
       </div>
 
       <div class="divider">또는</div>
 
-      <label>방 코드</label>
+      <label>방 코드로 참가</label>
       <input id="joinCodeInput" type="text" maxlength="6" placeholder="방 코드 입력">
       <div class="btn-row">
         <button id="btnJoinRoom" class="btn">방 참가하기</button>
       </div>
 
       <p id="entryError" class="error-text"></p>
+
+      <div class="room-list-header">
+        <label class="no-margin">참가 가능한 방</label>
+        <button id="btnRefreshRooms" class="btn btn-small">새로고침</button>
+      </div>
+      <ul id="roomList" class="room-list"></ul>
     </div>
   </section>
 
@@ -46,6 +54,7 @@
   <section id="screen-lobby" class="screen hidden">
     <div class="panel">
       <div class="room-code-box">
+        <span id="roomTitleLabel" class="room-title-label"></span>
         방 코드 <strong id="roomCodeLabel">------</strong>
         <span class="hint">친구에게 이 코드를 알려주세요</span>
       </div>
@@ -95,13 +104,34 @@
     </div>
   </section>
 
-  <!-- 배틀 결과 화면 -->
+  <!-- 배틀 화면 (한 턴씩 재생) -->
   <section id="screen-battle" class="screen hidden">
     <div class="panel wide">
-      <h2 id="battleTitle">전투 결과</h2>
+      <h2 id="battleTitle">전투</h2>
+
+      <div class="battle-stage">
+        <div class="fighter fighter-a">
+          <img id="fighterAPortrait" class="fighter-portrait" src="" alt="">
+          <div id="fighterAName" class="fighter-name">-</div>
+          <div class="hp-bar-track"><div id="fighterAHpFill" class="hp-bar-fill"></div></div>
+          <div id="fighterAHpText" class="hp-text">-/-</div>
+        </div>
+        <div class="battle-vs">VS</div>
+        <div class="fighter fighter-b">
+          <img id="fighterBPortrait" class="fighter-portrait" src="" alt="">
+          <div id="fighterBName" class="fighter-name">-</div>
+          <div class="hp-bar-track"><div id="fighterBHpFill" class="hp-bar-fill"></div></div>
+          <div id="fighterBHpText" class="hp-text">-/-</div>
+        </div>
+      </div>
+
+      <div id="battleEventText" class="battle-event-text">전투 시작 대기 중...</div>
       <div id="battleLog" class="battle-log"></div>
+
       <div class="btn-row">
-        <button id="btnBattleBack" class="btn btn-primary">로비로</button>
+        <button id="btnBattleNext" class="btn btn-primary">다음</button>
+        <button id="btnBattleSkip" class="btn">전체 보기</button>
+        <button id="btnBattleBack" class="btn hidden">로비로</button>
       </div>
     </div>
   </section>

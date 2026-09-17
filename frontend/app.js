@@ -48,23 +48,27 @@ async function refreshRings() {
 
 document.getElementById("btnCreateRoom").addEventListener("click", async () => {
   const nickname = document.getElementById("nicknameInput").value.trim();
+  const title = document.getElementById("roomTitleInput").value.trim();
   const errorEl = document.getElementById("entryError");
   errorEl.textContent = "";
   if (!nickname) {
     errorEl.textContent = "닉네임을 입력하세요.";
     return;
   }
+  if (!title) {
+    errorEl.textContent = "방 제목을 입력하세요.";
+    return;
+  }
   try {
-    const res = await api("/rooms", { method: "POST", body: JSON.stringify({ nickname }) });
+    const res = await api("/rooms", { method: "POST", body: JSON.stringify({ nickname, title }) });
     enterRoom(res);
   } catch (e) {
     errorEl.textContent = e.message;
   }
 });
 
-document.getElementById("btnJoinRoom").addEventListener("click", async () => {
+async function joinRoomByCode(code) {
   const nickname = document.getElementById("nicknameInput").value.trim();
-  const code = document.getElementById("joinCodeInput").value.trim().toUpperCase();
   const errorEl = document.getElementById("entryError");
   errorEl.textContent = "";
   if (!nickname || !code) {
@@ -77,6 +81,11 @@ document.getElementById("btnJoinRoom").addEventListener("click", async () => {
   } catch (e) {
     errorEl.textContent = e.message;
   }
+}
+
+document.getElementById("btnJoinRoom").addEventListener("click", () => {
+  const code = document.getElementById("joinCodeInput").value.trim().toUpperCase();
+  joinRoomByCode(code);
 });
 
 function enterRoom(res) {
@@ -88,8 +97,40 @@ function enterRoom(res) {
   refreshRings();
   connectWebSocket();
   document.getElementById("roomCodeLabel").textContent = state.roomCode;
+  document.getElementById("roomTitleLabel").textContent = res.title ?? "";
   showScreen("lobby");
 }
+
+// ---------------------------------------------------------------------------
+// 참가 가능한 방 목록
+// ---------------------------------------------------------------------------
+
+async function loadRoomList() {
+  const listEl = document.getElementById("roomList");
+  try {
+    const rooms = await api("/rooms");
+    listEl.innerHTML = "";
+    if (rooms.length === 0) {
+      listEl.innerHTML = `<li class="room-list-empty">참가 가능한 방이 없습니다.</li>`;
+      return;
+    }
+    rooms.forEach((room) => {
+      const li = document.createElement("li");
+      li.className = "room-list-item";
+      li.innerHTML = `
+        <span class="room-list-title">${room.title}</span>
+        <span class="room-list-count">(${room.player_count}/${room.max_players})</span>
+      `;
+      li.addEventListener("click", () => joinRoomByCode(room.room_code));
+      listEl.appendChild(li);
+    });
+  } catch (e) {
+    listEl.innerHTML = `<li class="room-list-empty">방 목록을 불러오지 못했습니다.</li>`;
+  }
+}
+
+document.getElementById("btnRefreshRooms").addEventListener("click", loadRoomList);
+loadRoomList();
 
 // ---------------------------------------------------------------------------
 // 웹소켓 (로비 + 배틀 결과)
@@ -119,6 +160,7 @@ function connectWebSocket() {
 
 function renderLobby(data) {
   state.hostPlayerId = data.host_player_id;
+  document.getElementById("roomTitleLabel").textContent = data.title ?? "";
   const list = document.getElementById("playerList");
   list.innerHTML = "";
 
@@ -266,30 +308,156 @@ document.getElementById("btnSubmitDeck").addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 배틀 결과 화면
+// 배틀 화면 (이벤트를 한 번에 하나씩 재생)
 // ---------------------------------------------------------------------------
+
+const battle = {
+  data: null,
+  index: 0,
+  fighters: { A: null, B: null },
+};
 
 function renderBattleResult(data) {
   document.getElementById("battleTitle").textContent = `${data.player_a} vs ${data.player_b}`;
 
-  const logEl = document.getElementById("battleLog");
-  logEl.innerHTML = "";
+  battle.data = data;
+  battle.index = 0;
+  battle.fighters = { A: null, B: null };
 
-  const winnerLine = document.createElement("span");
-  winnerLine.className = "winner-line";
-  winnerLine.textContent = `🏆 승자: ${data.winner_nickname}`;
-  logEl.appendChild(winnerLine);
-
-  data.log.forEach((line) => {
-    const span = document.createElement("span");
-    span.className = line.startsWith("---") ? "duel-line" : "event-line";
-    span.textContent = line;
-    logEl.appendChild(span);
-  });
+  document.getElementById("battleLog").innerHTML = "";
+  document.getElementById("battleEventText").textContent = "전투 시작!";
+  document.getElementById("btnBattleNext").classList.remove("hidden");
+  document.getElementById("btnBattleSkip").classList.remove("hidden");
+  document.getElementById("btnBattleBack").classList.add("hidden");
 
   showScreen("battle");
   refreshRings();
 }
+
+function setFighterUI(side, fighter) {
+  const nameEl = document.getElementById(`fighter${side}Name`);
+  const portraitEl = document.getElementById(`fighter${side}Portrait`);
+  const fillEl = document.getElementById(`fighter${side}HpFill`);
+  const textEl = document.getElementById(`fighter${side}HpText`);
+
+  if (!fighter) {
+    nameEl.textContent = "-";
+    portraitEl.src = "";
+    fillEl.style.width = "0%";
+    textEl.textContent = "-/-";
+    return;
+  }
+
+  nameEl.textContent = fighter.name;
+  portraitEl.src = portraitSrc(fighter.name);
+  portraitEl.onerror = () => { portraitEl.onerror = null; portraitEl.src = FALLBACK_PORTRAIT; };
+  const pct = Math.max(0, Math.min(100, (fighter.hp / fighter.max_hp) * 100));
+  fillEl.style.width = `${pct}%`;
+  fillEl.classList.toggle("low", pct <= 30);
+  textEl.textContent = `${Math.max(fighter.hp, 0)}/${fighter.max_hp}`;
+}
+
+function flashFighter(side, kind) {
+  const el = document.querySelector(`.fighter-${side.toLowerCase()}`);
+  if (!el) return;
+  const cls = kind === "heal" ? "flash-heal" : kind === "buff" ? "flash-buff"
+    : kind === "debuff" ? "flash-debuff" : kind === "miss" ? "flash-miss" : "flash-hit";
+  el.classList.remove("flash-hit", "flash-heal", "flash-buff", "flash-debuff", "flash-miss");
+  // 강제 리플로우로 애니메이션 재시작
+  void el.offsetWidth;
+  el.classList.add(cls);
+}
+
+function appendLogLine(text, cls) {
+  const logEl = document.getElementById("battleLog");
+  const span = document.createElement("span");
+  span.className = cls;
+  span.textContent = text;
+  logEl.appendChild(span);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function applyBattleEvent(ev) {
+  switch (ev.kind) {
+    case "duel_start":
+      battle.fighters.A = { ...ev.a };
+      battle.fighters.B = { ...ev.b };
+      appendLogLine(ev.text, "duel-line");
+      break;
+
+    case "attack":
+    case "skill_damage": {
+      const targetSide = ev.target_side;
+      battle.fighters[targetSide].hp = ev.target_hp;
+      flashFighter(targetSide, "hit");
+      appendLogLine(ev.text, "event-line");
+      break;
+    }
+
+    case "miss": {
+      flashFighter(ev.target_side, "miss");
+      appendLogLine(ev.text, "event-line");
+      break;
+    }
+
+    case "skill_heal": {
+      battle.fighters[ev.actor_side].hp = ev.actor_hp;
+      flashFighter(ev.actor_side, "heal");
+      appendLogLine(ev.text, "event-line");
+      break;
+    }
+
+    case "skill_heal_mp":
+      appendLogLine(ev.text, "event-line");
+      break;
+
+    case "skill_buff":
+      flashFighter(ev.actor_side, "buff");
+      appendLogLine(ev.text, "event-line");
+      break;
+
+    case "skill_debuff": {
+      const targetSide = ev.team_wide ? (ev.actor_side === "A" ? "B" : "A") : ev.target_side;
+      flashFighter(targetSide, "debuff");
+      appendLogLine(ev.text, "event-line");
+      break;
+    }
+
+    case "faint":
+      battle.fighters[ev.side].hp = 0;
+      appendLogLine(ev.text, "event-line");
+      break;
+
+    case "battle_end": {
+      appendLogLine(`🏆 승자: ${battle.data.winner_nickname}`, "winner-line");
+      document.getElementById("battleEventText").textContent = `🏆 승자: ${battle.data.winner_nickname}`;
+      document.getElementById("btnBattleNext").classList.add("hidden");
+      document.getElementById("btnBattleSkip").classList.add("hidden");
+      document.getElementById("btnBattleBack").classList.remove("hidden");
+      break;
+    }
+  }
+
+  setFighterUI("A", battle.fighters.A);
+  setFighterUI("B", battle.fighters.B);
+  if (ev.kind !== "battle_end") {
+    document.getElementById("battleEventText").textContent = ev.text;
+  }
+}
+
+document.getElementById("btnBattleNext").addEventListener("click", () => {
+  if (!battle.data || battle.index >= battle.data.events.length) return;
+  applyBattleEvent(battle.data.events[battle.index]);
+  battle.index += 1;
+});
+
+document.getElementById("btnBattleSkip").addEventListener("click", () => {
+  if (!battle.data) return;
+  while (battle.index < battle.data.events.length) {
+    applyBattleEvent(battle.data.events[battle.index]);
+    battle.index += 1;
+  }
+});
 
 document.getElementById("btnBattleBack").addEventListener("click", () => {
   showScreen("lobby");

@@ -13,6 +13,11 @@
 
 수치(피해 공식, MP 충전량, 명중률 등)는 모두 placeholder이며 이 파일 상단의
 상수만 조정하면 전체 밸런스를 다시 맞출 수 있다.
+
+전투 결과는 문자열 로그가 아니라 구조화된 이벤트 목록(events)으로 반환한다.
+프론트엔드가 이 이벤트를 한 번에 하나씩 재생하며(사용자 입력으로 다음 진행)
+HP바/공격 연출을 그릴 수 있도록 하기 위함이다. 각 이벤트는 표시용 한국어
+문장(text)도 함께 담고 있어, 별도 문구 조합 로직 없이도 바로 로그로 쓸 수 있다.
 """
 
 import random
@@ -92,12 +97,22 @@ def _calc_damage(effective_atk: float, effective_def: float) -> int:
     return max(1, round(effective_atk - effective_def * DEF_DAMAGE_FACTOR))
 
 
-def _apply_skill(attacker: BattleCard, defender: BattleCard,
-                  own_side: SideState, enemy_side: SideState, log: list) -> None:
+def _card_snapshot(card: BattleCard) -> dict:
+    return {
+        "name": card.name,
+        "rarity": card.rarity,
+        "hp": max(card.hp, 0),
+        "max_hp": card.max_hp,
+    }
+
+
+def _apply_skill(attacker: BattleCard, defender: BattleCard, attacker_side: str,
+                  own_side: SideState, enemy_side: SideState, events: list) -> None:
     effect = attacker.skill_effect_type
     scope = attacker.skill_scope
     stat = attacker.skill_stat
     potency = attacker.skill_potency / 100
+    defender_side = "B" if attacker_side == "A" else "A"
 
     if effect == "damage":
         multiplier = 1 + potency
@@ -107,43 +122,62 @@ def _apply_skill(attacker: BattleCard, defender: BattleCard,
         def_val = defender.effective_def * enemy_side.def_mult
         dmg = _calc_damage(atk_val, def_val)
         defender.hp -= dmg
-        log.append(f"{attacker.name}의 '{attacker.skill_name}'! {defender.name}에게 {dmg}의 피해.")
+        events.append({
+            "kind": "skill_damage",
+            "actor_side": attacker_side, "actor": attacker.name, "skill_name": attacker.skill_name,
+            "target_side": defender_side, "target": defender.name, "amount": dmg,
+            "target_hp": max(defender.hp, 0), "target_max_hp": defender.max_hp,
+            "text": f"{attacker.name}의 '{attacker.skill_name}'! {defender.name}에게 {dmg}의 피해.",
+        })
 
     elif effect == "heal":
         if stat == "mp":
             heal_mp = round(attacker.max_mp * potency)
             attacker.mp = min(attacker.max_mp, attacker.mp + heal_mp)
-            log.append(f"{attacker.name}의 '{attacker.skill_name}'! MP {heal_mp} 회복.")
+            events.append({
+                "kind": "skill_heal_mp",
+                "actor_side": attacker_side, "actor": attacker.name, "skill_name": attacker.skill_name,
+                "amount": heal_mp,
+                "text": f"{attacker.name}의 '{attacker.skill_name}'! MP {heal_mp} 회복.",
+            })
         else:
             heal_hp = round(attacker.max_hp * potency)
             attacker.hp = min(attacker.max_hp, attacker.hp + heal_hp)
-            log.append(f"{attacker.name}의 '{attacker.skill_name}'! HP {heal_hp} 회복.")
+            events.append({
+                "kind": "skill_heal",
+                "actor_side": attacker_side, "actor": attacker.name, "skill_name": attacker.skill_name,
+                "amount": heal_hp, "actor_hp": attacker.hp, "actor_max_hp": attacker.max_hp,
+                "text": f"{attacker.name}의 '{attacker.skill_name}'! HP {heal_hp} 회복.",
+            })
 
     elif effect == "buff":
-        target_state = own_side if scope == "team" else None
-        if target_state is not None:
+        is_team = scope == "team"
+        if is_team:
             if stat == "atk":
-                target_state.atk_mult *= (1 + potency)
+                own_side.atk_mult *= (1 + potency)
             else:
-                target_state.def_mult *= (1 + potency)
-            log.append(f"{attacker.name}의 '{attacker.skill_name}'! 아군 전체 강화.")
+                own_side.def_mult *= (1 + potency)
         else:
             if stat == "atk":
                 attacker.atk_mult *= (1 + potency)
             else:
                 attacker.def_mult *= (1 + potency)
-            log.append(f"{attacker.name}의 '{attacker.skill_name}'! 자신 강화.")
+        events.append({
+            "kind": "skill_buff",
+            "actor_side": attacker_side, "actor": attacker.name, "skill_name": attacker.skill_name,
+            "team_wide": is_team, "stat": stat,
+            "text": f"{attacker.name}의 '{attacker.skill_name}'! " + ("아군 전체 강화." if is_team else "자신 강화."),
+        })
 
     elif effect == "debuff":
-        target_state = enemy_side if scope == "enemy_team" else None
-        if target_state is not None:
+        is_team = scope == "enemy_team"
+        if is_team:
             if stat == "atk":
-                target_state.atk_mult *= (1 - potency)
+                enemy_side.atk_mult *= (1 - potency)
             elif stat == "def":
-                target_state.def_mult *= (1 - potency)
+                enemy_side.def_mult *= (1 - potency)
             else:
                 defender.acc_mult *= (1 - potency)
-            log.append(f"{attacker.name}의 '{attacker.skill_name}'! 적 전체 약화.")
         else:
             if stat == "atk":
                 defender.atk_mult *= (1 - potency)
@@ -151,23 +185,37 @@ def _apply_skill(attacker: BattleCard, defender: BattleCard,
                 defender.def_mult *= (1 - potency)
             else:
                 defender.acc_mult *= (1 - potency)
-            log.append(f"{attacker.name}의 '{attacker.skill_name}'! {defender.name} 약화.")
+        events.append({
+            "kind": "skill_debuff",
+            "actor_side": attacker_side, "actor": attacker.name, "skill_name": attacker.skill_name,
+            "target_side": defender_side, "target": defender.name, "team_wide": is_team, "stat": stat,
+            "text": f"{attacker.name}의 '{attacker.skill_name}'! " + ("적 전체 약화." if is_team else f"{defender.name} 약화."),
+        })
 
 
 def resolve_duel(card_a: BattleCard, card_b: BattleCard,
-                  side_a: SideState, side_b: SideState, log: list) -> None:
-    log.append(f"--- {card_a.name}({card_a.hp}hp) vs {card_b.name}({card_b.hp}hp) ---")
+                  side_a: SideState, side_b: SideState, events: list) -> None:
+    events.append({
+        "kind": "duel_start",
+        "a": _card_snapshot(card_a),
+        "b": _card_snapshot(card_b),
+        "text": f"--- {card_a.name}({card_a.hp}hp) vs {card_b.name}({card_b.hp}hp) ---",
+    })
 
     if card_a.war_stat >= card_b.war_stat:
         attacker, defender = card_a, card_b
         atk_side, def_side = side_a, side_b
+        attacker_label = "A"
     else:
         attacker, defender = card_b, card_a
         atk_side, def_side = side_b, side_a
+        attacker_label = "B"
 
     for _ in range(MAX_TURNS_PER_DUEL):
+        defender_label = "B" if attacker_label == "A" else "A"
+
         if attacker.mp >= attacker.max_mp:
-            _apply_skill(attacker, defender, atk_side, def_side, log)
+            _apply_skill(attacker, defender, attacker_label, atk_side, def_side, events)
             attacker.mp = 0
         else:
             hit_chance = min(0.99, BASE_HIT_CHANCE * attacker.acc_mult)
@@ -176,42 +224,70 @@ def resolve_duel(card_a: BattleCard, card_b: BattleCard,
                 def_val = defender.effective_def * def_side.def_mult
                 dmg = _calc_damage(atk_val, def_val)
                 defender.hp -= dmg
-                log.append(f"{attacker.name}의 공격! {defender.name}에게 {dmg}의 피해. (HP {max(defender.hp,0)}/{defender.max_hp})")
+                events.append({
+                    "kind": "attack",
+                    "actor_side": attacker_label, "actor": attacker.name,
+                    "target_side": defender_label, "target": defender.name, "amount": dmg,
+                    "target_hp": max(defender.hp, 0), "target_max_hp": defender.max_hp,
+                    "text": f"{attacker.name}의 공격! {defender.name}에게 {dmg}의 피해. (HP {max(defender.hp, 0)}/{defender.max_hp})",
+                })
             else:
-                log.append(f"{attacker.name}의 공격이 빗나갔다.")
+                events.append({
+                    "kind": "miss",
+                    "actor_side": attacker_label, "actor": attacker.name,
+                    "target_side": defender_label, "target": defender.name,
+                    "text": f"{attacker.name}의 공격이 빗나갔다.",
+                })
             attacker.mp = min(attacker.max_mp, attacker.mp + attacker.mp_gain_per_attack)
 
         if defender.hp <= 0:
-            log.append(f"{defender.name} 쓰러짐!")
+            events.append({
+                "kind": "faint",
+                "side": defender_label, "name": defender.name,
+                "text": f"{defender.name} 쓰러짐!",
+            })
             break
 
         attacker, defender = defender, attacker
         atk_side, def_side = def_side, atk_side
+        attacker_label = defender_label
     else:
-        log.append("제한 턴 도달 - 무승부 처리(체력 비율이 높은 쪽 승리).")
         if card_a.hp / card_a.max_hp < card_b.hp / card_b.max_hp:
             card_a.hp = 0
+            loser_side, loser_name = "A", card_a.name
         else:
             card_b.hp = 0
+            loser_side, loser_name = "B", card_b.name
+        events.append({
+            "kind": "faint",
+            "side": loser_side, "name": loser_name,
+            "text": f"제한 턴 도달 - 체력 비율이 낮은 {loser_name} 패배 처리.",
+        })
 
 
 def simulate_deck_battle(deck_a: list[BattleCard], deck_b: list[BattleCard]) -> dict:
     side_a, side_b = SideState(), SideState()
-    log: list[str] = []
+    events: list[dict] = []
     ia, ib = 0, 0
 
     while ia < len(deck_a) and ib < len(deck_b):
         card_a, card_b = deck_a[ia], deck_b[ib]
-        resolve_duel(card_a, card_b, side_a, side_b, log)
+        resolve_duel(card_a, card_b, side_a, side_b, events)
         if card_a.hp <= 0:
             ia += 1
         if card_b.hp <= 0:
             ib += 1
 
     winner = "A" if ib >= len(deck_b) else "B"
+    events.append({
+        "kind": "battle_end",
+        "winner_side": winner,
+        "text": "전투 종료.",
+    })
+
     return {
         "winner": winner,
         "remaining_a": len(deck_a) - ia,
         "remaining_b": len(deck_b) - ib,
-        "log": log,
+        "events": events,
     }
