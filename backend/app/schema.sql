@@ -1,10 +1,16 @@
 -- 장수 원본 정보 (이름, 소속, 고유 스킬)
+-- 고유 스킬은 텍스트 설명과 별개로 전투 엔진이 실제로 해석할 수 있는
+-- 효과 메타데이터(skill_effect_type/scope/stat/potency)를 함께 가진다.
 CREATE TABLE IF NOT EXISTS generals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     faction TEXT NOT NULL,
     skill_name TEXT NOT NULL,
-    skill_description TEXT NOT NULL
+    skill_description TEXT NOT NULL,
+    skill_effect_type TEXT NOT NULL CHECK (skill_effect_type IN ('damage', 'heal', 'buff', 'debuff')),
+    skill_scope TEXT NOT NULL CHECK (skill_scope IN ('enemy', 'enemy_team', 'self', 'team')),
+    skill_stat TEXT CHECK (skill_stat IN ('atk', 'def', 'acc', 'hp', 'mp')),
+    skill_potency INTEGER NOT NULL
 );
 
 -- 장수의 등급별 카드 (같은 장수라도 등급마다 스탯이 다름)

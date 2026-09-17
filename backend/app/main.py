@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from db import get_connection, init_db
 from gacha import GACHA_COST, perform_draw
+from battle import build_battle_card, simulate_deck_battle
 
 
 @asynccontextmanager
@@ -93,3 +94,40 @@ def get_player_cards(player_id: int):
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+class BattleRequest(BaseModel):
+    deck_a: list[int]  # player_card_id 5개
+    deck_b: list[int]  # player_card_id 5개
+
+
+def _load_deck(conn, player_card_ids: list[int]):
+    cards = []
+    for pcid in player_card_ids:
+        row = conn.execute(
+            "SELECT pc.enhance_level, gc.*, "
+            "g.name, g.skill_name, g.skill_description, "
+            "g.skill_effect_type, g.skill_scope, g.skill_stat, g.skill_potency "
+            "FROM player_cards pc "
+            "JOIN general_cards gc ON gc.id = pc.general_card_id "
+            "JOIN generals g ON g.id = gc.general_id "
+            "WHERE pc.id = ?",
+            (pcid,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"player_card_id {pcid}를 찾을 수 없습니다.")
+        cards.append(build_battle_card(row, row["enhance_level"]))
+    return cards
+
+
+@app.post("/battle/simulate")
+def battle_simulate(req: BattleRequest):
+    if len(req.deck_a) != 5 or len(req.deck_b) != 5:
+        raise HTTPException(status_code=400, detail="덱은 반드시 5장이어야 합니다.")
+
+    conn = get_connection()
+    deck_a = _load_deck(conn, req.deck_a)
+    deck_b = _load_deck(conn, req.deck_b)
+    conn.close()
+
+    return simulate_deck_battle(deck_a, deck_b)
