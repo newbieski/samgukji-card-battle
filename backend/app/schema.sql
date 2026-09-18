@@ -42,6 +42,24 @@ CREATE TABLE IF NOT EXISTS players (
     last_ring_purchase_at TEXT
 );
 
+-- 시나리오(싱글 캠페인) 진행도. 클리어한 스테이지만 한 줄씩 쌓인다.
+--
+-- 최초 클리어 보너스를 (전투, 레벨, 덱 모드)별로 따로 주기 위해 deck_mode까지
+-- UNIQUE에 넣었다. 고정덱으로 먼저 깨도 나중에 내 덱으로 다시 깨면 보너스를 또 받는다.
+-- 레벨 해금은 덱 모드를 가리지 않는다 (어느 쪽으로든 깨면 다음 레벨이 열림).
+CREATE TABLE IF NOT EXISTS scenario_progress (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL REFERENCES players(id),
+    battle_key TEXT NOT NULL,
+    level INTEGER NOT NULL,
+    deck_mode TEXT NOT NULL CHECK (deck_mode IN ('own', 'fixed')),
+    cleared_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(player_id, battle_key, level, deck_mode)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenario_progress_player
+    ON scenario_progress(player_id);
+
 -- 플레이어가 보유한 카드 (뽑기 결과, 강화 레벨 포함)
 CREATE TABLE IF NOT EXISTS player_cards (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
