@@ -34,6 +34,7 @@ MP_FILL_ATTACKS = 3          # 기본 공격 약 3회면 MP가 가득 참
 BASE_HIT_CHANCE = 0.95
 DEF_DAMAGE_FACTOR = 0.35     # 피해 = atk - def * DEF_DAMAGE_FACTOR
 DAMAGE_MIN_RATIO = 0.12      # 최소 피해 = 공격력의 12% (약한 장수도 1씩만 긁지 않도록)
+DAMAGE_VARIANCE = 0.30       # 한 방 피해의 난수 폭 (+-30%)
 DAMAGE_CAP_RATIO = 0.42      # 기본 공격 한 방은 대상 최대 체력의 42%를 넘지 못한다
 SKILL_DAMAGE_CAP_RATIO = 0.62  # 스킬은 조금 더 크게 들어간다
 ENEMY_TEAM_DAMAGE_BONUS = 1.2  # '전체 공격' 스킬은 단일 대상보다 더 강하게 처리
@@ -42,6 +43,7 @@ ENEMY_TEAM_DAMAGE_BONUS = 1.2  # '전체 공격' 스킬은 단일 대상보다 �
 # 정상적인 전투는 그대로 끝내고, 늘어지는 10% 남짓만 일기토로 넘기도록 12로 잡는다.
 MAX_ROUNDS = 12
 
+TEAM_EFFECT_ROUNDS = 3       # 진영 전체 버프/디버프가 유지되는 라운드 수
 PLAGUE_DURATION = 3           # 역병 지속 라운드
 PLAGUE_SPREAD_CHANCE = 0.5    # 매 라운드 감염자가 같은 편 미감염 카드에게 옮길 확률
 
@@ -93,8 +95,42 @@ class BattleCard:
 
 @dataclass
 class SideState:
-    atk_mult: float = 1.0
-    def_mult: float = 1.0
+    """진영 전체에 걸린 공격/방어 배수.
+
+    예전에는 영구히 곱해지기만 해서, '적 전체 공격력 -46%' 한 방이면 상대 공격력이
+    전투가 끝날 때까지 절반으로 묶였다. 그 스킬을 가진 쪽이 사실상 이기는 구조라
+    (실측: 그 스킬이 있는 진영의 승률 100% vs 0%) 지속 라운드를 두었다.
+    rounds가 None이면 안 풀린다 - 시나리오 스테이지 핸디캡처럼 판 자체의 조건에 쓴다.
+    """
+    mods: list = field(default_factory=list)   # [{"stat","mult","rounds","label"}]
+
+    def add(self, stat: str, mult: float, rounds: int | None = TEAM_EFFECT_ROUNDS,
+            label: str = "") -> None:
+        self.mods.append({"stat": stat, "mult": mult, "rounds": rounds, "label": label})
+
+    def _mult(self, stat: str) -> float:
+        value = 1.0
+        for m in self.mods:
+            if m["stat"] == stat:
+                value *= m["mult"]
+        return value
+
+    @property
+    def atk_mult(self) -> float:
+        return self._mult("atk")
+
+    @property
+    def def_mult(self) -> float:
+        return self._mult("def")
+
+    def tick(self) -> list[dict]:
+        """라운드가 끝날 때 호출. 방금 풀린 효과들을 돌려준다."""
+        for m in self.mods:
+            if m["rounds"] is not None:
+                m["rounds"] -= 1
+        expired = [m for m in self.mods if m["rounds"] is not None and m["rounds"] <= 0]
+        self.mods = [m for m in self.mods if m["rounds"] is None or m["rounds"] > 0]
+        return expired
 
 
 def build_battle_card(row, enhance_level: int = 0) -> BattleCard:
@@ -128,8 +164,11 @@ def _calc_damage(effective_atk: float, effective_def: float, target_max_hp: int 
     raw = effective_atk - effective_def * DEF_DAMAGE_FACTOR
     floor = max(1, round(effective_atk * DAMAGE_MIN_RATIO))
     damage = max(raw, floor)
+    # 한 방 한 방에 난수 폭을 준다. 이게 없으면 전투가 사실상 결정론적이어서
+    # 같은 덱끼리는 몇 번을 다시 붙어도 늘 같은 쪽이 이긴다 (재도전이 무의미해진다).
+    damage *= random.uniform(1 - DAMAGE_VARIANCE, 1 + DAMAGE_VARIANCE)
     if target_max_hp > 0:
-        damage = min(damage, max(floor, target_max_hp * cap_ratio))
+        damage = min(damage, target_max_hp * cap_ratio)
     return max(1, round(damage))
 
 
@@ -367,31 +406,31 @@ async def _use_skill(side: str, attacker: BattleCard, decks: dict, sides: dict, 
     elif effect == "buff":
         is_team = scope == "team"
         if is_team:
-            if stat == "atk":
-                own_side.atk_mult *= (1 + potency)
-            else:
-                own_side.def_mult *= (1 + potency)
+            own_side.add("atk" if stat == "atk" else "def", 1 + potency,
+                         label=f"{attacker.name}의 「{attacker.skill_name}」")
         else:
             if stat == "atk":
                 attacker.atk_mult *= (1 + potency)
             else:
                 attacker.def_mult *= (1 + potency)
+        team_note = f" ({TEAM_EFFECT_ROUNDS}라운드)" if is_team else ""
         await emit({"kind": "skill_buff", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
                     "team_wide": is_team, "stat": stat,
-                    "text": "아군 전체 강화." if is_team else "자신 강화."})
+                    "rounds": TEAM_EFFECT_ROUNDS if is_team else None,
+                    "text": ("아군 전체 강화." if is_team else "자신 강화.") + team_note})
 
     elif effect == "debuff":
         is_team = scope == "enemy_team"
         if is_team:
-            if stat == "atk":
-                enemy_side_state.atk_mult *= (1 - potency)
-            elif stat == "def":
-                enemy_side_state.def_mult *= (1 - potency)
+            label = f"{attacker.name}의 「{attacker.skill_name}」"
+            if stat in ("atk", "def"):
+                enemy_side_state.add(stat, 1 - potency, label=label)
             else:
                 for _, c in _alive_with_index(decks[enemy_side]):
                     c.acc_mult *= (1 - potency)
             await emit({"kind": "skill_debuff", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
-                        "team_wide": True, "stat": stat, "text": "적 전체 약화."})
+                        "team_wide": True, "stat": stat, "rounds": TEAM_EFFECT_ROUNDS,
+                        "text": f"적 전체 약화. ({TEAM_EFFECT_ROUNDS}라운드)"})
         else:
             targets = _alive_with_index(decks[enemy_side])
             if not targets:
@@ -681,9 +720,22 @@ async def _tick_plague(decks: dict, emit) -> None:
                 })
 
 
+async def _tick_side_effects(sides: dict, names: dict, emit) -> None:
+    """라운드가 끝날 때 진영 버프/디버프의 지속 라운드를 줄이고, 풀린 것을 알린다."""
+    for side, state in sides.items():
+        for m in state.tick():
+            label = m["label"] or ("공격" if m["stat"] == "atk" else "방어")
+            await emit({
+                "kind": "side_effect_end", "side": side,
+                "stat": m["stat"], "label": m["label"],
+                "text": f"{names[side]} 진영에 걸려 있던 {label} 효과가 풀렸다.",
+            })
+
+
 async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], emit, choose_target,
                            names: dict | None = None,
-                           choose_actor=None, choose_action=None) -> dict:
+                           choose_actor=None, choose_action=None,
+                           side_mods: dict | None = None) -> dict:
     """
     emit(event: dict) -> None (awaitable): 이벤트가 생길 때마다 즉시 호출됨 (실시간 중계용).
     choose_target(side, actor, targets) -> (idx, BattleCard) (awaitable): 대상이 둘 이상일 때 호출.
@@ -693,9 +745,17 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
       쓸지 아껴둘지 고른다. 넘기지 않으면 차 있으면 무조건 스킬을 쓴다.
     사람 차례면 위 콜백들이 웹소켓으로 물어보고, AI 위임이면 알아서 정해서 반환한다.
     names: {"A": 닉네임, "B": 닉네임} - 차례 표시에 쓴다.
+    side_mods: {"B": {"atk": 1.15, "def": 1.10}} - 진영에 미리 얹는 보정.
+      시나리오 스테이지의 핸디캡/보너스가 이걸로 들어온다. 전투 중 버프/디버프와
+      같은 배수라서, 스킬 효과와 자연스럽게 곱해진다.
     """
     decks = {"A": deck_a, "B": deck_b}
     sides = {"A": SideState(), "B": SideState()}
+    for side, mod in (side_mods or {}).items():
+        # 판 자체의 조건이라 rounds=None으로 걸어 끝까지 유지한다
+        for stat in ("atk", "def"):
+            if mod.get(stat, 1.0) != 1.0:
+                sides[side].add(stat, mod[stat], rounds=None, label="스테이지 보정")
     names = names or {"A": "A팀", "B": "B팀"}
 
     await emit({
@@ -726,6 +786,7 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
         if not candidates:
             # 이 진영이 이번 라운드에 쓸 카드를 다 썼다 -> 양쪽 다 새 라운드로
             acted = {"A": set(), "B": set()}
+            await _tick_side_effects(sides, names, emit)
             await _tick_plague(decks, emit)
             if not _alive_with_index(deck_a) or not _alive_with_index(deck_b):
                 break
