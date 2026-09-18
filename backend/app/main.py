@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -49,14 +50,26 @@ def create_player(req: CreatePlayerRequest):
     return row
 
 
+def _purchase_cooldown_remaining_sec(last_purchase_at: str | None) -> int:
+    if last_purchase_at is None:
+        return 0
+    elapsed = (datetime.utcnow() - datetime.fromisoformat(last_purchase_at)).total_seconds()
+    return max(0, round(RING_PURCHASE_COOLDOWN_SEC - elapsed))
+
+
 @app.get("/players/{player_id}")
 def get_player(player_id: int):
     conn = get_connection()
-    row = conn.execute("SELECT id, nickname, rings FROM players WHERE id = ?", (player_id,)).fetchone()
+    row = conn.execute(
+        "SELECT id, nickname, rings, last_ring_purchase_at FROM players WHERE id = ?",
+        (player_id,),
+    ).fetchone()
     conn.close()
     if row is None:
         raise HTTPException(status_code=404, detail="플레이어를 찾을 수 없습니다.")
-    return dict(row)
+    data = dict(row)
+    data["purchase_cooldown_sec"] = _purchase_cooldown_remaining_sec(data.pop("last_ring_purchase_at"))
+    return data
 
 
 # 링(재화) 구매 - 지금은 실제 결제 없이 즉시 지급하는 임시(mock) 기능.
@@ -67,6 +80,13 @@ RING_PACKAGES = {
     "medium": {"rings": 1200, "price_label": "₩2,900 (예시가)"},
     "large": {"rings": 3300, "price_label": "₩6,900 (예시가, 보너스 300링 포함)"},
 }
+
+# 무한 구매 방지용 쿨다운(초). placeholder 값 - 밸런스 조정 시 이 값만 바꾸면 된다.
+RING_PURCHASE_COOLDOWN_SEC = 300
+
+# 대전 종료 시 지급하는 링. 참여만 해도 최소 보상은 받고, 승리 시 더 많이 받는다.
+BATTLE_WIN_REWARD = 80
+BATTLE_LOSE_REWARD = 30
 
 
 @app.get("/ring-packages")
@@ -90,15 +110,27 @@ def purchase_rings(player_id: int, req: PurchaseRingsRequest):
         conn.close()
         raise HTTPException(status_code=404, detail="플레이어를 찾을 수 없습니다.")
 
+    cooldown_remaining = _purchase_cooldown_remaining_sec(player["last_ring_purchase_at"])
+    if cooldown_remaining > 0:
+        conn.close()
+        raise HTTPException(
+            status_code=429,
+            detail=f"다음 구매까지 {cooldown_remaining}초 남았습니다.",
+        )
+
     conn.execute(
-        "UPDATE players SET rings = rings + ? WHERE id = ?",
-        (package["rings"], player_id),
+        "UPDATE players SET rings = rings + ?, last_ring_purchase_at = ? WHERE id = ?",
+        (package["rings"], datetime.utcnow().isoformat(), player_id),
     )
     conn.commit()
     remaining = conn.execute("SELECT rings FROM players WHERE id = ?", (player_id,)).fetchone()["rings"]
     conn.close()
 
-    return {"purchased_rings": package["rings"], "remaining_rings": remaining}
+    return {
+        "purchased_rings": package["rings"],
+        "remaining_rings": remaining,
+        "purchase_cooldown_sec": RING_PURCHASE_COOLDOWN_SEC,
+    }
 
 
 @app.post("/gacha/draw")
@@ -355,69 +387,88 @@ async def _maybe_run_battle(room: Room) -> None:
             "message": "지금은 2명 대결(PvP)만 지원합니다. 협동전은 준비 중입니다.",
         })
         return
+    if room.battle_running:
+        return
+    room.battle_running = True
 
-    p1, p2 = contenders
-    players_by_side = {"A": p1, "B": p2}
-    conn = get_connection()
     try:
-        deck_a = _load_deck(conn, p1.deck)
-        deck_b = _load_deck(conn, p2.deck)
-    finally:
+        p1, p2 = contenders
+        players_by_side = {"A": p1, "B": p2}
+        conn = get_connection()
+        try:
+            deck_a = _load_deck(conn, p1.deck)
+            deck_b = _load_deck(conn, p2.deck)
+        finally:
+            conn.close()
+
+        async def emit(event: dict) -> None:
+            await _broadcast(room, {"type": "battle_event", **event})
+
+        async def choose_target(side, actor, targets):
+            player = players_by_side[side]
+            if player.auto_target or player.websocket is None:
+                return _ai_pick_target(targets)
+
+            enemy_side = "B" if side == "A" else "A"
+            await emit({
+                "kind": "waiting_choice",
+                "text": f"{actor.name}의 대상 선택을 기다리는 중... (최대 {TARGET_TIMEOUT_SEC}초)",
+            })
+            future = asyncio.get_running_loop().create_future()
+            player.pending_target = future
+            try:
+                await player.websocket.send_json({
+                    "type": "await_target",
+                    "actor": actor.name,
+                    "targets": [
+                        {**card_snapshot(c), "side": enemy_side, "pos": idx} for idx, c in targets
+                    ],
+                    "timeout_sec": TARGET_TIMEOUT_SEC,
+                })
+                target_pos = await asyncio.wait_for(future, timeout=TARGET_TIMEOUT_SEC)
+                for idx, c in targets:
+                    if idx == target_pos:
+                        return idx, c
+                return _ai_pick_target(targets)
+            except Exception:
+                return _ai_pick_target(targets)
+            finally:
+                player.pending_target = None
+
+        result = await run_team_battle(deck_a, deck_b, emit, choose_target)
+        winner_nickname = p1.nickname if result["winner"] == "A" else p2.nickname
+
+        p1_reward = BATTLE_WIN_REWARD if result["winner"] == "A" else BATTLE_LOSE_REWARD
+        p2_reward = BATTLE_WIN_REWARD if result["winner"] == "B" else BATTLE_LOSE_REWARD
+        conn = get_connection()
+        conn.execute("UPDATE players SET rings = rings + ? WHERE id = ?", (p1_reward, p1.player_id))
+        conn.execute("UPDATE players SET rings = rings + ? WHERE id = ?", (p2_reward, p2.player_id))
+        conn.commit()
         conn.close()
 
-    async def emit(event: dict) -> None:
-        await _broadcast(room, {"type": "battle_event", **event})
+        await _broadcast(room, {
+            "type": "battle_result",
+            "player_a": p1.nickname,
+            "player_b": p2.nickname,
+            "winner_nickname": winner_nickname,
+            "rings_earned": {"A": p1_reward, "B": p2_reward},
+            **result,
+        })
 
-    async def choose_target(side, actor, targets):
-        player = players_by_side[side]
-        if player.auto_target or player.websocket is None:
-            return _ai_pick_target(targets)
+        for p in room.players.values():
+            p.deck = None
+            p.ready = False
 
-        enemy_side = "B" if side == "A" else "A"
-        future = asyncio.get_running_loop().create_future()
-        player.pending_target = future
-        try:
-            await player.websocket.send_json({
-                "type": "await_target",
-                "actor": actor.name,
-                "targets": [
-                    {**card_snapshot(c), "side": enemy_side, "pos": idx} for idx, c in targets
-                ],
-                "timeout_sec": TARGET_TIMEOUT_SEC,
-            })
-            target_pos = await asyncio.wait_for(future, timeout=TARGET_TIMEOUT_SEC)
-            for idx, c in targets:
-                if idx == target_pos:
-                    return idx, c
-            return _ai_pick_target(targets)
-        except Exception:
-            return _ai_pick_target(targets)
-        finally:
-            player.pending_target = None
-
-    result = await run_team_battle(deck_a, deck_b, emit, choose_target)
-    winner_nickname = p1.nickname if result["winner"] == "A" else p2.nickname
-
-    await _broadcast(room, {
-        "type": "battle_result",
-        "player_a": p1.nickname,
-        "player_b": p2.nickname,
-        "winner_nickname": winner_nickname,
-        **result,
-    })
-
-    for p in room.players.values():
-        p.deck = None
-        p.ready = False
-
-    if room.is_solo:
-        ai_player = next((p for p in room.players.values() if p.nickname == AI_NICKNAME), None)
-        if ai_player is not None:
-            conn = get_connection()
-            ai_player.deck = _draw_ai_deck(conn, ai_player.player_id)
-            conn.close()
-            ai_player.ready = True
-            await _broadcast(room, _lobby_payload(room))
+        if room.is_solo:
+            ai_player = next((p for p in room.players.values() if p.nickname == AI_NICKNAME), None)
+            if ai_player is not None:
+                conn = get_connection()
+                ai_player.deck = _draw_ai_deck(conn, ai_player.player_id)
+                conn.close()
+                ai_player.ready = True
+                await _broadcast(room, _lobby_payload(room))
+    finally:
+        room.battle_running = False
 
 
 @app.websocket("/ws/rooms/{room_code}")
@@ -448,7 +499,10 @@ async def room_websocket(websocket: WebSocket, room_code: str, player_id: int):
                     continue
                 player.deck = deck
                 await _broadcast(room, _lobby_payload(room))
-                await _maybe_run_battle(room)
+                # 별도 태스크로 띄운다 - 이 커넥션의 수신 루프 안에서 그대로 await하면
+                # 이 플레이어 자신이 전투 중 대상을 골라야 할 때 그 응답(choose_target)을
+                # 받을 수신 루프 자체가 막혀 있어 자기 선택이 계속 타임아웃되는 문제가 있었다.
+                asyncio.create_task(_maybe_run_battle(room))
 
             elif msg_type == "set_auto":
                 player.auto_target = bool(data.get("auto"))

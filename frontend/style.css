@@ -77,7 +77,7 @@ main {
 }
 
 .panel.wide {
-  max-width: 720px;
+  max-width: min(94vw, 1200px);
 }
 
 .panel h2 {
@@ -271,6 +271,21 @@ input[type="text"] {
 .card.rarity-B { border-color: var(--rarity-B); box-shadow: 0 0 9px var(--rarity-B); }
 .card.rarity-A { border-color: var(--rarity-A); animation: glow-pulse-A 1.8s ease-in-out infinite; }
 .card.rarity-S { border-color: var(--rarity-S); animation: glow-pulse-S 1.4s ease-in-out infinite; }
+
+.rarity-badge {
+  position: absolute;
+  z-index: 4;
+  font-size: 9px;
+  font-weight: bold;
+  padding: 1px 4px;
+  line-height: 1.4;
+  background: rgba(11, 6, 32, 0.9);
+  border: 1px solid;
+  pointer-events: none;
+}
+
+.rarity-badge-tl { top: 4px; left: 4px; }
+.rarity-badge-br { bottom: 4px; right: 4px; }
 
 .card-portrait {
   width: 96px;
@@ -513,10 +528,10 @@ input[type="text"] {
 
 .deck-column {
   flex: 1;
-  max-width: 260px;
+  max-width: 420px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   position: relative;
   z-index: 1;
 }
@@ -533,8 +548,8 @@ input[type="text"] {
 .battle-slot {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px;
+  gap: 12px;
+  padding: 10px;
   background: rgba(20, 12, 41, 0.85);
   border: 3px solid var(--panel-border);
   transition: background-color 0.15s, opacity 0.2s;
@@ -551,8 +566,8 @@ input[type="text"] {
 }
 
 .battle-slot-portrait {
-  width: 40px;
-  height: 50px;
+  width: 56px;
+  height: 70px;
   object-fit: contain;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
@@ -566,8 +581,8 @@ input[type="text"] {
 }
 
 .battle-slot-name {
-  font-size: 9px;
-  margin-bottom: 3px;
+  font-size: 11px;
+  margin-bottom: 5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -579,9 +594,9 @@ input[type="text"] {
 
 .hp-bar-track.small,
 .mp-bar-track.small {
-  height: 6px;
+  height: 8px;
   border-width: 1px;
-  margin-bottom: 2px;
+  margin-bottom: 3px;
 }
 
 .hp-bar-track,

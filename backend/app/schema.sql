@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS players (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nickname TEXT NOT NULL,
     rings INTEGER NOT NULL DEFAULT 1000,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_ring_purchase_at TEXT
 );
 
 -- 플레이어가 보유한 카드 (뽑기 결과, 강화 레벨 포함)

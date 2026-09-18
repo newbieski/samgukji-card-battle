@@ -244,23 +244,55 @@ document.getElementById("btnCardsBack").addEventListener("click", () => {
 // 링 구매 (임시 mock 결제)
 // ---------------------------------------------------------------------------
 
+let shopCooldownTimer = null;
+
 async function openShop() {
   const box = document.getElementById("shopPackages");
   box.innerHTML = `<p class="hint">불러오는 중...</p>`;
   document.getElementById("shopOverlay").classList.remove("hidden");
+  clearInterval(shopCooldownTimer);
   try {
-    const packages = await api("/ring-packages");
-    box.innerHTML = "";
-    packages.forEach((pkg) => {
-      const btn = document.createElement("button");
-      btn.className = "btn shop-package-btn";
-      btn.innerHTML = `<span>${pkg.rings}링</span><span class="shop-price">${pkg.price_label}</span>`;
-      btn.addEventListener("click", () => purchaseRings(pkg.package_id));
-      box.appendChild(btn);
-    });
+    const [packages, player] = await Promise.all([
+      api("/ring-packages"),
+      api(`/players/${state.playerId}`),
+    ]);
+    renderShopPackages(packages, player.purchase_cooldown_sec);
   } catch (e) {
     box.innerHTML = `<p class="error-text">상품 목록을 불러오지 못했습니다.</p>`;
   }
+}
+
+function renderShopPackages(packages, cooldownSec) {
+  const box = document.getElementById("shopPackages");
+  box.innerHTML = "";
+  clearInterval(shopCooldownTimer);
+
+  if (cooldownSec > 0) {
+    const notice = document.createElement("p");
+    notice.className = "hint";
+    notice.textContent = `다음 구매까지 ${cooldownSec}초 남았습니다.`;
+    box.appendChild(notice);
+
+    let remaining = cooldownSec;
+    shopCooldownTimer = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearInterval(shopCooldownTimer);
+        renderShopPackages(packages, 0);
+      } else {
+        notice.textContent = `다음 구매까지 ${remaining}초 남았습니다.`;
+      }
+    }, 1000);
+  }
+
+  packages.forEach((pkg) => {
+    const btn = document.createElement("button");
+    btn.className = "btn shop-package-btn";
+    btn.disabled = cooldownSec > 0;
+    btn.innerHTML = `<span>${pkg.rings}링</span><span class="shop-price">${pkg.price_label}</span>`;
+    btn.addEventListener("click", () => purchaseRings(pkg.package_id));
+    box.appendChild(btn);
+  });
 }
 
 async function purchaseRings(packageId) {
@@ -274,6 +306,15 @@ async function purchaseRings(packageId) {
     document.getElementById("shopOverlay").classList.add("hidden");
   } catch (e) {
     alert(e.message);
+    try {
+      const [packages, player] = await Promise.all([
+        api("/ring-packages"),
+        api(`/players/${state.playerId}`),
+      ]);
+      renderShopPackages(packages, player.purchase_cooldown_sec);
+    } catch (_) {
+      // 상점이 열려있는 동안만 보여주는 보조 정보라 실패해도 무시
+    }
   }
 }
 
@@ -306,11 +347,20 @@ function portraitSrc(name) {
   return `assets/portraits/${encodeURIComponent(name)}.png`;
 }
 
+function rarityBadgesHtml(rarity) {
+  const style = `color: var(--rarity-${rarity}); border-color: var(--rarity-${rarity});`;
+  return `
+    <span class="rarity-badge rarity-badge-tl" style="${style}">${rarity}</span>
+    <span class="rarity-badge rarity-badge-br" style="${style}">${rarity}</span>
+  `;
+}
+
 function renderDrawResult(result) {
   const box = document.getElementById("drawResult");
   const card = document.getElementById("drawCard");
   card.className = `card rarity-${result.rarity}`;
   card.innerHTML = `
+    ${rarityBadgesHtml(result.rarity)}
     <img class="card-portrait" src="${portraitSrc(result.general_name)}" alt="${result.general_name}"
          onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
     <div class="card-name">${result.general_name}</div>
@@ -350,6 +400,7 @@ function renderCardGrid() {
     const selected = state.selectedDeck.includes(card.player_card_id);
     tile.className = `card-tile rarity-${card.rarity}${selected ? " selected" : ""}`;
     tile.innerHTML = `
+      ${rarityBadgesHtml(card.rarity)}
       <img class="tile-portrait" src="${portraitSrc(card.name)}" alt="${card.name}"
            onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
       <div class="name">${card.name}</div>
@@ -417,6 +468,20 @@ function getBattleCard(side, pos) {
   return battle.decks[side]?.[pos] ?? null;
 }
 
+function updateSkipButton() {
+  const btn = document.getElementById("btnBattleSkip");
+  if (battle.fastForward) {
+    btn.disabled = true;
+    btn.textContent = "연출 생략 중";
+    return;
+  }
+  const pending = battle.queue.length;
+  btn.disabled = pending === 0;
+  btn.textContent = pending > 0
+    ? `연출 건너뛰기 (밀린 이벤트 ${pending}개)`
+    : "연출 건너뛰기 (밀린 이벤트 없음)";
+}
+
 function resetBattleUI() {
   battle.decks = { A: [], B: [] };
   battle.queue = [];
@@ -427,6 +492,7 @@ function resetBattleUI() {
   document.getElementById("battleEventText").textContent = "전투 시작!";
   document.getElementById("btnBattleSkip").classList.remove("hidden");
   document.getElementById("btnBattleBack").classList.add("hidden");
+  updateSkipButton();
   showScreen("battle");
 }
 
@@ -435,6 +501,7 @@ function queueBattleEvent(ev) {
     resetBattleUI();
   }
   battle.queue.push(ev);
+  updateSkipButton();
   if (!battle.playing) pumpBattleQueue();
 }
 
@@ -443,6 +510,7 @@ async function pumpBattleQueue() {
   while (battle.queue.length > 0) {
     const ev = battle.queue.shift();
     applyBattleEvent(ev);
+    updateSkipButton();
     if (!battle.fastForward && ev.kind !== "battle_start") {
       await new Promise((resolve) => setTimeout(resolve, EVENT_DELAY_MS));
     }
@@ -461,6 +529,7 @@ function cardSlotHtml(side, pos, card) {
   ].join("");
   return `
     <div class="battle-slot rarity-${card.rarity}${dead ? " dead" : ""}" data-side="${side}" data-pos="${pos}">
+      ${rarityBadgesHtml(card.rarity)}
       <img class="battle-slot-portrait" src="${portraitSrc(card.name)}" alt=""
            onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
       <div class="battle-slot-info">
@@ -669,11 +738,18 @@ function onBattleResult(data) {
   document.getElementById("btnBattleBack").classList.remove("hidden");
   document.getElementById("battleEventText").textContent = `🏆 승자: ${data.winner_nickname}`;
   appendLogLine(`🏆 승자: ${data.winner_nickname}`, "winner-line");
+  if (data.rings_earned) {
+    appendLogLine(
+      `${data.player_a} +${data.rings_earned.A}링 · ${data.player_b} +${data.rings_earned.B}링`,
+      "event-line",
+    );
+  }
   refreshRings();
 }
 
 document.getElementById("btnBattleSkip").addEventListener("click", () => {
   battle.fastForward = true;
+  updateSkipButton();
 });
 
 document.getElementById("btnBattleBack").addEventListener("click", () => {

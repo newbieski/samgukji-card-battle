@@ -43,6 +43,7 @@ class Room:
     title: str = "이름없는 방"
     players: dict = field(default_factory=dict)  # player_id -> RoomPlayer
     is_solo: bool = False  # true면 AI 상대가 낀 싱글 플레이 방 - 공개 목록에서 숨김
+    battle_running: bool = False  # 전투가 별도 태스크로 이미 돌고 있는지 (중복 시작 방지)
 
     def is_full(self) -> bool:
         return len(self.players) >= MAX_PLAYERS_PER_ROOM
