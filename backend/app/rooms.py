@@ -34,6 +34,12 @@ class RoomPlayer:
     deck: list | None = None
     auto_target: bool = False       # true면 대상 선택을 AI에게 위임
     pending_target: object = None   # 대상 응답을 기다리는 asyncio.Future (있을 때만)
+    # 시나리오가 내려준 덱 명단 [(장수 이름, 등급)]. 보유 카드(player_cards)를 거치지
+    # 않고 general_cards에서 바로 만든다. 설정돼 있으면 deck보다 우선한다.
+    lineup: list | None = None
+
+    def has_deck(self) -> bool:
+        return self.deck is not None or self.lineup is not None
 
 
 @dataclass
@@ -44,6 +50,9 @@ class Room:
     players: dict = field(default_factory=dict)  # player_id -> RoomPlayer
     is_solo: bool = False  # true면 AI 상대가 낀 싱글 플레이 방 - 공개 목록에서 숨김
     battle_running: bool = False  # 전투가 별도 태스크로 이미 돌고 있는지 (중복 시작 방지)
+    # 시나리오 스테이지로 시작한 방이면 {"battle_key","level","deck_mode",
+    # "human_player_id","ai_player_id"}. 보상 정산과 적 진영 보정에 쓴다.
+    scenario: dict | None = None
 
     def is_full(self) -> bool:
         return len(self.players) >= MAX_PLAYERS_PER_ROOM

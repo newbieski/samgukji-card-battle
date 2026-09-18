@@ -14,6 +14,8 @@ from gacha import (
 )
 from battle import build_battle_card, card_snapshot, run_team_battle, skill_summary
 from rooms import manager as room_manager, RoomPlayer, Room, MAX_PLAYERS_PER_ROOM
+import scenario
+from scenario_data import BATTLES_BY_KEY, MAX_LEVEL, build_enemy_lineup, build_fixed_lineup
 
 TARGET_TIMEOUT_SEC = 20
 
@@ -320,7 +322,7 @@ def list_rooms():
             "title": room.title,
             "player_count": len(room.players),
             "max_players": MAX_PLAYERS_PER_ROOM,
-            "in_battle": any(p.deck is not None for p in room.players.values()),
+            "in_battle": any(p.has_deck() for p in room.players.values()),
         }
         for room in room_manager.list_rooms()
         if not room.is_full() and not room.is_solo
@@ -405,6 +407,109 @@ def add_ai_opponent(room_code: str):
     return {"room_code": room.code, "ai_player_id": ai_player["id"]}
 
 
+# ---------------------------------------------------------------------------
+# 시나리오 (싱글 캠페인)
+# ---------------------------------------------------------------------------
+
+class ScenarioStartRequest(BaseModel):
+    battle_key: str
+    level: int
+    deck_mode: str  # "own" | "fixed"
+
+
+@app.get("/scenario/battles")
+def scenario_battles(player_id: int):
+    conn = get_connection()
+    try:
+        return {"battles": scenario.battle_list(conn, player_id)}
+    finally:
+        conn.close()
+
+
+@app.get("/scenario/battles/{battle_key}/levels/{level}")
+def scenario_stage(battle_key: str, level: int, player_id: int):
+    if battle_key not in BATTLES_BY_KEY:
+        raise HTTPException(status_code=404, detail="존재하지 않는 전투입니다.")
+    if not 1 <= level <= MAX_LEVEL:
+        raise HTTPException(status_code=400, detail=f"레벨은 1~{MAX_LEVEL}입니다.")
+    conn = get_connection()
+    try:
+        return scenario.stage_detail(conn, player_id, battle_key, level)
+    finally:
+        conn.close()
+
+
+@app.post("/rooms/{room_code}/scenario")
+async def start_scenario_stage(room_code: str, req: ScenarioStartRequest):
+    """방을 시나리오 스테이지로 바꾼다.
+
+    AI 상대에게 그 스테이지의 적 진용을 들려주고, 고정덱을 골랐다면 플레이어 덱도
+    여기서 바로 채워준다(그 경우 덱 편성 화면을 거칠 필요가 없다).
+    같은 방에서 다른 스테이지에 다시 도전할 수 있도록, 이미 있는 AI는 재사용한다.
+    """
+    room = room_manager.get_room(room_code)
+    if room is None:
+        raise HTTPException(status_code=404, detail="존재하지 않는 방입니다.")
+    if room.battle_running:
+        raise HTTPException(status_code=409, detail="이미 전투가 진행 중입니다.")
+    battle = BATTLES_BY_KEY.get(req.battle_key)
+    if battle is None:
+        raise HTTPException(status_code=404, detail="존재하지 않는 전투입니다.")
+    if not 1 <= req.level <= MAX_LEVEL:
+        raise HTTPException(status_code=400, detail=f"레벨은 1~{MAX_LEVEL}입니다.")
+    if req.deck_mode not in scenario.DECK_MODES:
+        raise HTTPException(status_code=400, detail="덱 모드는 own 또는 fixed 입니다.")
+
+    human = room.players.get(room.host_player_id)
+    if human is None:
+        raise HTTPException(status_code=400, detail="방에 플레이어가 없습니다.")
+
+    conn = get_connection()
+    try:
+        if not scenario.is_playable(scenario.cleared_modes(conn, human.player_id),
+                                    req.battle_key, req.level):
+            raise HTTPException(status_code=403, detail="아직 잠겨 있는 레벨입니다.")
+
+        ai = next((p for p in room.players.values() if p.nickname == AI_NICKNAME), None)
+        if ai is None:
+            if room.is_full():
+                raise HTTPException(status_code=400, detail="방 인원이 가득 찼습니다.")
+            ai_row = _create_player_row(conn, AI_NICKNAME)
+            ai = RoomPlayer(player_id=ai_row["id"], nickname=AI_NICKNAME, auto_target=True)
+            room.players[ai.player_id] = ai
+    finally:
+        conn.close()
+
+    ai.ready = True
+    ai.deck = None
+    ai.lineup = build_enemy_lineup(battle, req.level)
+
+    human.ready = True
+    human.deck = None
+    human.lineup = build_fixed_lineup(battle, req.level) if req.deck_mode == "fixed" else None
+
+    room.is_solo = True
+    room.scenario = {
+        "battle_key": req.battle_key, "level": req.level, "deck_mode": req.deck_mode,
+        "human_player_id": human.player_id, "ai_player_id": ai.player_id,
+    }
+    await _broadcast(room, _lobby_payload(room))
+
+    # 고정덱이면 양쪽 덱이 이미 다 찼으니 바로 전투를 띄운다.
+    # 내 덱이면 플레이어가 submit_deck 을 보낼 때 거기서 시작된다.
+    if req.deck_mode == "fixed":
+        asyncio.create_task(_maybe_run_battle(room))
+
+    return {
+        "room_code": room.code,
+        "battle_key": req.battle_key, "battle_name": battle["name"],
+        "level": req.level, "deck_mode": req.deck_mode,
+        "scene": battle["scene"], "intro": battle["intro"],
+        # 고정덱이면 덱을 짤 필요 없이 바로 시작할 수 있다
+        "needs_deck": req.deck_mode == "own",
+    }
+
+
 def _lobby_payload(room: Room) -> dict:
     return {
         "type": "lobby_update",
@@ -416,7 +521,7 @@ def _lobby_payload(room: Room) -> dict:
                 "player_id": p.player_id,
                 "nickname": p.nickname,
                 "ready": p.ready,
-                "deck_submitted": p.deck is not None,
+                "deck_submitted": p.has_deck(),
                 "auto_target": p.auto_target,
             }
             for p in room.players.values()
@@ -434,7 +539,7 @@ async def _broadcast(room: Room, payload: dict) -> None:
 
 
 async def _maybe_run_battle(room: Room) -> None:
-    contenders = [p for p in room.players.values() if p.deck is not None]
+    contenders = [p for p in room.players.values() if p.has_deck()]
     if len(contenders) < 2:
         return
     if len(contenders) > 2:
@@ -449,14 +554,28 @@ async def _maybe_run_battle(room: Room) -> None:
 
     try:
         p1, p2 = contenders
+        # 시나리오 방에서는 사람이 항상 A, 적(AI)이 B가 되도록 고정한다.
+        # 스테이지 보정을 어느 진영에 걸지가 여기에 달려 있다.
+        if room.scenario is not None and p1.player_id == room.scenario["ai_player_id"]:
+            p1, p2 = p2, p1
         players_by_side = {"A": p1, "B": p2}
+
         conn = get_connection()
         try:
-            deck_a = _load_deck(conn, p1.deck)
-            deck_b = _load_deck(conn, p2.deck)
+            def load(player):
+                # 시나리오가 내려준 명단이 있으면 보유 카드 대신 그걸 쓴다
+                if player.lineup is not None:
+                    return scenario.load_lineup(conn, player.lineup)
+                return _load_deck(conn, player.deck)
+            deck_a, deck_b = load(p1), load(p2)
         finally:
             conn.close()
         decks_by_side = {"A": deck_a, "B": deck_b}
+
+        side_mods = None
+        if room.scenario is not None:
+            side_mods = {"B": scenario.stage_enemy_mods(
+                room.scenario["battle_key"], room.scenario["level"])}
 
         async def emit(event: dict) -> None:
             await _broadcast(room, {"type": "battle_event", **event})
@@ -531,36 +650,68 @@ async def _maybe_run_battle(room: Room) -> None:
                     return idx, c
             return _ai_pick_target(targets)
 
+        stage_name = None
+        if room.scenario is not None:
+            battle_meta = BATTLES_BY_KEY[room.scenario["battle_key"]]
+            stage_name = f"{battle_meta['name']} Lv{room.scenario['level']}"
+
         result = await run_team_battle(
             deck_a, deck_b, emit, choose_target,
-            names={"A": p1.nickname, "B": p2.nickname},
+            names={"A": p1.nickname, "B": stage_name or p2.nickname},
             choose_actor=choose_actor,
             choose_action=choose_action,
+            side_mods=side_mods,
         )
         winner_nickname = p1.nickname if result["winner"] == "A" else p2.nickname
 
-        p1_reward = BATTLE_WIN_REWARD if result["winner"] == "A" else BATTLE_LOSE_REWARD
-        p2_reward = BATTLE_WIN_REWARD if result["winner"] == "B" else BATTLE_LOSE_REWARD
+        extra: dict = {}
         conn = get_connection()
-        conn.execute("UPDATE players SET rings = rings + ? WHERE id = ?", (p1_reward, p1.player_id))
-        conn.execute("UPDATE players SET rings = rings + ? WHERE id = ?", (p2_reward, p2.player_id))
-        conn.commit()
-        conn.close()
+        try:
+            if room.scenario is not None:
+                # 시나리오는 사람 쪽만 정산한다 (해금·최초 클리어 보너스 포함)
+                outcome = scenario.settle(
+                    conn, p1.player_id, room.scenario["battle_key"],
+                    room.scenario["level"], room.scenario["deck_mode"],
+                    won=result["winner"] == "A",
+                )
+                p1_reward, p2_reward = outcome["rings"], 0
+                extra = {
+                    "scenario": {
+                        **room.scenario, "stage_name": stage_name,
+                        "battle_name": battle_meta["name"], **outcome,
+                    }
+                }
+            else:
+                p1_reward = BATTLE_WIN_REWARD if result["winner"] == "A" else BATTLE_LOSE_REWARD
+                p2_reward = BATTLE_WIN_REWARD if result["winner"] == "B" else BATTLE_LOSE_REWARD
+                conn.execute("UPDATE players SET rings = rings + ? WHERE id = ?",
+                             (p1_reward, p1.player_id))
+                conn.execute("UPDATE players SET rings = rings + ? WHERE id = ?",
+                             (p2_reward, p2.player_id))
+                conn.commit()
+        finally:
+            conn.close()
 
         await _broadcast(room, {
             "type": "battle_result",
             "player_a": p1.nickname,
-            "player_b": p2.nickname,
+            "player_b": stage_name or p2.nickname,
             "winner_nickname": winner_nickname,
             "rings_earned": {"A": p1_reward, "B": p2_reward},
+            **extra,
             **result,
         })
 
         for p in room.players.values():
             p.deck = None
+            p.lineup = None
             p.ready = False
 
-        if room.is_solo:
+        if room.scenario is not None:
+            # 다음 스테이지는 프론트가 다시 골라서 /rooms/{code}/scenario 를 부른다
+            room.scenario = None
+            await _broadcast(room, _lobby_payload(room))
+        elif room.is_solo:
             ai_player = next((p for p in room.players.values() if p.nickname == AI_NICKNAME), None)
             if ai_player is not None:
                 conn = get_connection()
