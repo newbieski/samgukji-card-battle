@@ -38,6 +38,10 @@ MAX_ROUNDS = 30
 PLAGUE_DURATION = 3           # 역병 지속 라운드
 PLAGUE_SPREAD_CHANCE = 0.5    # 매 라운드 감염자가 같은 편 미감염 카드에게 옮길 확률
 
+# 라운드 제한에 걸리면 각 진영 대표 한 명씩 뽑아 일기토(데스매치)로 승부를 낸다.
+DEATHMATCH_MAX_EXCHANGES = 40  # 안전장치 (아래 가중치 때문에 실제로는 훨씬 빨리 끝난다)
+DEATHMATCH_ESCALATION = 0.12   # 합을 주고받을 때마다 피해가 이만큼씩 세진다 - 반드시 끝나도록
+
 
 @dataclass
 class BattleCard:
@@ -173,28 +177,6 @@ def _stun_duration(potency_pct: int) -> int:
     if potency_pct >= 30:
         return 2
     return 1
-
-
-def judge_by_points(deck_a: list[BattleCard], deck_b: list[BattleCard]) -> tuple[str, dict]:
-    """라운드 제한에 걸렸을 때의 판정승 로직 (전멸승과 분리해서 따로 계산한다).
-
-    생존 인원을 먼저 보고, 같으면 남은 체력 비율로 가른다.
-    """
-    def score(deck: list[BattleCard]) -> dict:
-        total_max = max(1, sum(c.max_hp for c in deck))
-        return {
-            "alive": len([c for c in deck if c.hp > 0]),
-            "hp_ratio": round(sum(max(c.hp, 0) for c in deck) / total_max, 4),
-        }
-
-    score_a, score_b = score(deck_a), score(deck_b)
-    if score_a["alive"] != score_b["alive"]:
-        winner = "A" if score_a["alive"] > score_b["alive"] else "B"
-    elif score_a["hp_ratio"] != score_b["hp_ratio"]:
-        winner = "A" if score_a["hp_ratio"] > score_b["hp_ratio"] else "B"
-    else:
-        winner = "A"  # 완전 동률은 사실상 없지만, 보상 처리를 위해 한쪽으로 정한다
-    return winner, {"A": score_a, "B": score_b}
 
 
 def _build_turn_order(deck_a: list[BattleCard], deck_b: list[BattleCard]) -> list[tuple[str, BattleCard]]:
@@ -438,6 +420,174 @@ async def _use_skill(side: str, attacker: BattleCard, decks: dict, sides: dict, 
                     "text": f"{defender.name}에게 역병이 퍼지기 시작했다."})
 
 
+async def _deathmatch_skill(side: str, fighter: BattleCard, foe_side: str, foe: BattleCard,
+                             power: float, emit) -> None:
+    """일기토에서의 스킬. 팀 단위 효과는 1:1에 맞게 단순화해서 적용한다."""
+    effect = fighter.skill_effect_type
+    potency = fighter.skill_potency / 100
+    effect_text = skill_summary(fighter.skill_effect_type, fighter.skill_scope,
+                                fighter.skill_stat, fighter.skill_potency)
+
+    await emit({
+        "kind": "deathmatch_skill",
+        "side": side, "name": fighter.name, "skill_name": fighter.skill_name,
+        "skill_effect_type": effect, "skill_effect_text": effect_text,
+        "text": f"{fighter.name}의 '{fighter.skill_name}'!",
+    })
+
+    async def strike(multiplier: float, label: str) -> None:
+        dmg = _calc_damage(fighter.effective_atk * power * multiplier, foe.effective_def)
+        foe.hp -= dmg
+        await emit({
+            "kind": "deathmatch_attack", "is_skill": True,
+            "side": side, "name": fighter.name,
+            "target_side": foe_side, "target": foe.name, "amount": dmg,
+            "target_hp": max(foe.hp, 0), "target_max_hp": foe.max_hp,
+            "text": f"{label} {foe.name}에게 {dmg}의 피해. (HP {max(foe.hp, 0)}/{foe.max_hp})",
+        })
+
+    if effect == "damage":
+        await strike(1 + potency, "필살의 일격!")
+    elif effect == "heal":
+        amount = round(fighter.max_hp * potency)
+        fighter.hp = min(fighter.max_hp, fighter.hp + amount)
+        await emit({"kind": "deathmatch_heal", "side": side, "name": fighter.name, "amount": amount,
+                    "target_hp": fighter.hp, "target_max_hp": fighter.max_hp,
+                    "text": f"{fighter.name}이(가) HP {amount} 회복."})
+    elif effect == "buff":
+        fighter.atk_mult *= (1 + potency)
+        await emit({"kind": "deathmatch_buff", "side": side, "name": fighter.name,
+                    "text": f"{fighter.name}의 기세가 올랐다! (공격력 상승)"})
+    elif effect == "debuff":
+        foe.atk_mult *= (1 - potency)
+        await emit({"kind": "deathmatch_debuff", "side": foe_side, "name": foe.name,
+                    "text": f"{foe.name}의 기세가 꺾였다. (공격력 하락)"})
+    elif effect == "extra_turn":
+        await strike(1.0, "연격!")
+    elif effect == "stun":
+        foe.stun_turns = max(foe.stun_turns, 1)
+        await emit({"kind": "deathmatch_stun", "side": foe_side, "name": foe.name,
+                    "text": f"{foe.name}이(가) 다음 합을 놓친다!"})
+    elif effect == "swap":
+        foe.acc_mult *= (1 - potency)
+        await emit({"kind": "deathmatch_debuff", "side": foe_side, "name": foe.name,
+                    "text": f"{foe.name}이(가) 교란당했다. (명중률 하락)"})
+    elif effect == "mp_drain":
+        foe.mp = 0
+        await strike(0.5, "기력을 빼앗으며")
+    elif effect == "plague":
+        foe.plague_turns = PLAGUE_DURATION
+        foe.plague_dmg = max(1, round(foe.max_hp * potency / PLAGUE_DURATION))
+        await emit({"kind": "deathmatch_plague", "side": foe_side, "name": foe.name,
+                    "text": f"{foe.name}에게 역병이 퍼졌다."})
+    else:
+        await strike(1 + potency, "일격!")
+
+
+async def _deathmatch_turn(side: str, fighter: BattleCard, foe_side: str, foe: BattleCard,
+                            power: float, emit) -> None:
+    if fighter.stun_turns > 0:
+        fighter.stun_turns -= 1
+        await emit({"kind": "deathmatch_stunned", "side": side, "name": fighter.name,
+                    "text": f"{fighter.name}은(는) 움직이지 못했다."})
+        return
+
+    if fighter.mp >= fighter.max_mp:
+        fighter.mp = 0
+        await _deathmatch_skill(side, fighter, foe_side, foe, power, emit)
+        return
+
+    hit_chance = min(0.99, BASE_HIT_CHANCE * fighter.acc_mult)
+    if random.random() < hit_chance:
+        dmg = _calc_damage(fighter.effective_atk * power, foe.effective_def)
+        foe.hp -= dmg
+        await emit({
+            "kind": "deathmatch_attack", "is_skill": False,
+            "side": side, "name": fighter.name,
+            "target_side": foe_side, "target": foe.name, "amount": dmg,
+            "target_hp": max(foe.hp, 0), "target_max_hp": foe.max_hp,
+            "text": f"{fighter.name}의 공격! {foe.name}에게 {dmg}의 피해. (HP {max(foe.hp, 0)}/{foe.max_hp})",
+        })
+    else:
+        await emit({"kind": "deathmatch_miss", "side": side, "name": fighter.name,
+                    "target_side": foe_side, "target": foe.name,
+                    "text": f"{fighter.name}의 공격이 빗나갔다."})
+    fighter.mp = min(fighter.max_mp, fighter.mp + fighter.mp_gain_per_attack)
+
+
+async def run_deathmatch(deck_a: list[BattleCard], deck_b: list[BattleCard], emit) -> str:
+    """각 진영에서 무작위로 한 명씩 뽑아 쓰러질 때까지 1:1로 붙인다.
+
+    새 판이므로 체력/MP/상태이상을 초기화하고 시작하며, 합을 주고받을수록
+    피해가 세져서(DEATHMATCH_ESCALATION) 무한정 늘어지지 않는다.
+    """
+    champ_a = random.choice([c for c in deck_a if c.hp > 0])
+    champ_b = random.choice([c for c in deck_b if c.hp > 0])
+
+    for c in (champ_a, champ_b):
+        c.hp = c.max_hp
+        c.mp = 0
+        c.stun_turns = 0
+        c.plague_turns = 0
+        c.atk_mult = 1.0
+        c.def_mult = 1.0
+        c.acc_mult = 1.0
+
+    await emit({
+        "kind": "deathmatch_start",
+        "a": card_snapshot(champ_a), "b": card_snapshot(champ_b),
+        "text": f"{MAX_ROUNDS}라운드 동안 승부가 나지 않았다! "
+                f"{champ_a.name} vs {champ_b.name} - 일기토로 결판을 낸다!",
+    })
+
+    # 무력이 높은 쪽이 선공
+    if champ_a.war_stat >= champ_b.war_stat:
+        order = [("A", champ_a, "B", champ_b), ("B", champ_b, "A", champ_a)]
+    else:
+        order = [("B", champ_b, "A", champ_a), ("A", champ_a, "B", champ_b)]
+
+    for exchange in range(DEATHMATCH_MAX_EXCHANGES):
+        power = 1 + DEATHMATCH_ESCALATION * exchange
+        if exchange > 0:
+            await emit({"kind": "deathmatch_exchange", "exchange": exchange + 1,
+                        "text": f"--- {exchange + 1}합 ---"})
+
+        for side, fighter, foe_side, foe in order:
+            if champ_a.hp <= 0 or champ_b.hp <= 0:
+                break
+            await _deathmatch_turn(side, fighter, foe_side, foe, power, emit)
+
+        # 역병 피해는 합이 끝날 때 들어간다
+        for side, fighter in (("A", champ_a), ("B", champ_b)):
+            if fighter.hp > 0 and fighter.plague_turns > 0:
+                fighter.plague_turns -= 1
+                dmg = min(fighter.plague_dmg, fighter.hp)
+                fighter.hp -= dmg
+                await emit({"kind": "deathmatch_plague_tick", "side": side, "name": fighter.name,
+                            "amount": dmg, "target_hp": max(fighter.hp, 0),
+                            "target_max_hp": fighter.max_hp,
+                            "text": f"역병으로 {fighter.name}이(가) {dmg}의 피해를 입었다."})
+
+        if champ_a.hp <= 0 or champ_b.hp <= 0:
+            break
+
+    if champ_a.hp <= 0 and champ_b.hp <= 0:
+        winner = "A" if champ_a.max_hp >= champ_b.max_hp else "B"
+    elif champ_b.hp <= 0:
+        winner = "A"
+    elif champ_a.hp <= 0:
+        winner = "B"
+    else:  # 합 제한까지 갔을 때만 - 남은 체력 비율로
+        winner = "A" if (champ_a.hp / champ_a.max_hp) >= (champ_b.hp / champ_b.max_hp) else "B"
+
+    champ = champ_a if winner == "A" else champ_b
+    await emit({
+        "kind": "deathmatch_end", "winner_side": winner, "winner_name": champ.name,
+        "text": f"일기토 승자 - {champ.name}!",
+    })
+    return winner
+
+
 async def _tick_plague(decks: dict, emit) -> None:
     for side, deck in decks.items():
         infected = [(i, c) for i, c in enumerate(deck) if c.hp > 0 and c.plague_turns > 0]
@@ -524,20 +674,19 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
         await _tick_plague(decks, emit)
 
     alive_a, alive_b = _alive_with_index(deck_a), _alive_with_index(deck_b)
-    scores = None
     if alive_a and not alive_b:
         winner, decision = "A", "rout"
     elif alive_b and not alive_a:
         winner, decision = "B", "rout"
     else:
-        # 라운드 제한에 걸린 경우 - 전멸승과 구분되는 판정승
-        winner, scores = judge_by_points(deck_a, deck_b)
-        decision = "timeout"
+        # 라운드 제한에 걸리면 판정이 아니라 대표 한 명씩 뽑아 일기토로 결판
+        winner = await run_deathmatch(deck_a, deck_b, emit)
+        decision = "deathmatch"
 
-    end_text = "전투 종료." if decision == "rout" else f"{MAX_ROUNDS}라운드 종료 - 판정으로 승부를 가립니다."
+    end_text = "전투 종료." if decision == "rout" else "일기토로 승부가 갈렸다!"
     await emit({
         "kind": "battle_end",
-        "winner_side": winner, "decision": decision, "scores": scores,
+        "winner_side": winner, "decision": decision,
         "text": end_text,
     })
-    return {"winner": winner, "decision": decision, "scores": scores}
+    return {"winner": winner, "decision": decision}

@@ -162,6 +162,26 @@
     </div>
   </section>
 
+  <!-- 데스매치(일기토) 화면 - 라운드 제한에 걸리면 대표 1:1로 결판 -->
+  <section id="screen-deathmatch" class="screen hidden">
+    <div class="panel wide">
+      <h2 id="dmTitle">일기토</h2>
+      <p id="dmIntro" class="hint"></p>
+
+      <div class="dm-stage">
+        <div id="dmFighterA" class="dm-fighter dm-fighter-a"></div>
+        <div class="dm-vs">⚔</div>
+        <div id="dmFighterB" class="dm-fighter dm-fighter-b"></div>
+      </div>
+
+      <div id="dmEventText" class="battle-event-text">일기토 시작!</div>
+      <div class="btn-row battle-controls">
+        <button id="btnDmBack" class="btn hidden">로비로</button>
+      </div>
+      <div id="dmLog" class="battle-log"></div>
+    </div>
+  </section>
+
 </main>
 
 <script src="app.js"></script>

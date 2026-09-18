@@ -926,7 +926,146 @@ function showTurnIndicator(side, cardName) {
   el.innerHTML = `<span class="turn-player">${battle.playerNames[side] ?? side}</span> 차례 · ${cardName}`;
 }
 
+// ---------------------------------------------------------------------------
+// 데스매치(일기토) - 라운드 제한에 걸리면 대표 1:1로 결판을 낸다
+// ---------------------------------------------------------------------------
+
+const deathmatch = { fighters: { A: null, B: null } };
+
+function dmFighterHtml(card) {
+  const hpPct = card.max_hp ? Math.max(0, Math.min(100, (card.hp / card.max_hp) * 100)) : 0;
+  const mpPct = card.max_mp ? Math.max(0, Math.min(100, (card.mp / card.max_mp) * 100)) : 0;
+  const role = skillRole(card.skill_effect_type);
+  const ready = card.mp >= card.max_mp && card.hp > 0;
+  return `
+    ${rarityBadgesHtml(card.rarity)}
+    <img class="dm-fighter-portrait" src="${portraitSrc(card.name)}" alt=""
+         onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
+    <div class="dm-fighter-name">${card.name}</div>
+    <div class="dm-fighter-skill${ready ? " ready" : ""}">${role.icon} ${card.skill_name ?? ""}</div>
+    <div class="hp-bar-track"><div class="hp-bar-fill${hpPct <= 30 ? " low" : ""}" style="width:${hpPct}%"></div></div>
+    <div class="hp-text">HP ${Math.max(card.hp, 0)} / ${card.max_hp}</div>
+    <div class="mp-bar-track"><div class="mp-bar-fill${mpPct >= 100 ? " full" : ""}" style="width:${mpPct}%"></div></div>`;
+}
+
+function renderDeathmatchFighter(side) {
+  const card = deathmatch.fighters[side];
+  if (!card) return;
+  const el = document.getElementById(`dmFighter${side}`);
+  el.className = `dm-fighter dm-fighter-${side.toLowerCase()}`
+    + ` rarity-${card.rarity}${card.hp <= 0 ? " dm-dead" : ""}`;
+  el.innerHTML = dmFighterHtml(card);
+}
+
+function flashDmFighter(side, kind) {
+  const el = document.getElementById(`dmFighter${side}`);
+  if (!el) return;
+  el.classList.remove(...FLASH_CLASSES);
+  void el.offsetWidth;
+  el.classList.add(`flash-${kind}`);
+}
+
+function dmPopup(side, text, kind) {
+  const el = document.getElementById(`dmFighter${side}`);
+  if (!el) return;
+  const popup = document.createElement("div");
+  popup.className = `dmg-popup ${kind}`;
+  popup.textContent = text;
+  el.appendChild(popup);
+  popup.addEventListener("animationend", () => popup.remove());
+}
+
+function applyDeathmatchEvent(ev) {
+  switch (ev.kind) {
+    case "deathmatch_start":
+      deathmatch.fighters.A = { ...ev.a };
+      deathmatch.fighters.B = { ...ev.b };
+      document.getElementById("dmTitle").textContent =
+        `일기토 · ${ev.a.name} vs ${ev.b.name}`;
+      document.getElementById("dmIntro").textContent = ev.text;
+      document.getElementById("dmLog").innerHTML = "";
+      document.getElementById("btnDmBack").classList.add("hidden");
+      renderDeathmatchFighter("A");
+      renderDeathmatchFighter("B");
+      showScreen("deathmatch");
+      break;
+
+    case "deathmatch_attack": {
+      const t = deathmatch.fighters[ev.target_side];
+      if (t) t.hp = ev.target_hp;
+      renderDeathmatchFighter(ev.target_side);
+      flashDmFighter(ev.target_side, ev.is_skill ? "skill-hit" : "hit");
+      dmPopup(ev.target_side, `-${ev.amount}`, "damage");
+      break;
+    }
+
+    case "deathmatch_heal": {
+      const f = deathmatch.fighters[ev.side];
+      if (f) f.hp = ev.target_hp;
+      renderDeathmatchFighter(ev.side);
+      flashDmFighter(ev.side, "heal");
+      dmPopup(ev.side, `+${ev.amount}`, "heal");
+      break;
+    }
+
+    case "deathmatch_plague_tick": {
+      const f = deathmatch.fighters[ev.side];
+      if (f) f.hp = ev.target_hp;
+      renderDeathmatchFighter(ev.side);
+      flashDmFighter(ev.side, "hit");
+      dmPopup(ev.side, `-${ev.amount}`, "damage");
+      break;
+    }
+
+    case "deathmatch_skill":
+      showSkillBanner(ev.name, ev.skill_name, ev.skill_effect_type, ev.skill_effect_text);
+      flashDmFighter(ev.side, "buff");
+      break;
+
+    case "deathmatch_buff":
+      flashDmFighter(ev.side, "buff");
+      break;
+
+    case "deathmatch_debuff":
+    case "deathmatch_stun":
+    case "deathmatch_plague":
+      flashDmFighter(ev.side, "debuff");
+      break;
+
+    case "deathmatch_miss":
+      flashDmFighter(ev.target_side, "miss");
+      dmPopup(ev.target_side, "MISS", "miss");
+      break;
+
+    case "deathmatch_end":
+      document.getElementById("dmIntro").textContent = `🏆 ${ev.text}`;
+      break;
+  }
+
+  appendDmLogLine(ev.text, ev.kind === "deathmatch_exchange" ? "round-line" : "event-line");
+  if (ev.kind !== "deathmatch_start") {
+    document.getElementById("dmEventText").textContent = ev.text;
+  }
+}
+
+function appendDmLogLine(text, cls) {
+  const logEl = document.getElementById("dmLog");
+  const span = document.createElement("span");
+  span.className = cls;
+  span.textContent = text;
+  logEl.appendChild(span);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+document.getElementById("btnDmBack").addEventListener("click", () => {
+  showScreen("lobby");
+});
+
 function applyBattleEvent(ev) {
+  if (ev.kind && ev.kind.startsWith("deathmatch")) {
+    applyDeathmatchEvent(ev);
+    return;
+  }
   if (ev.kind === "battle_start") {
     battle.decks.A = ev.deck_a.map((c) => ({ ...c }));
     battle.decks.B = ev.deck_b.map((c) => ({ ...c }));
@@ -1009,24 +1148,27 @@ function maybeShowBattleResult() {
   document.getElementById("battleTitle").textContent = `${data.player_a} vs ${data.player_b}`;
   clearTargetPrompt();
   document.getElementById("btnBattleSkip").classList.add("hidden");
-  document.getElementById("btnBattleBack").classList.remove("hidden");
-  const byTimeout = data.decision === "timeout";
-  const winLabel = byTimeout ? "판정승" : "승자";
-  document.getElementById("battleEventText").textContent = `🏆 ${winLabel}: ${data.winner_nickname}`;
-  appendLogLine(`🏆 ${winLabel}: ${data.winner_nickname}`, "winner-line");
-  if (byTimeout && data.scores) {
-    appendLogLine(
-      `판정 기준 - ${data.player_a} 생존 ${data.scores.A.alive}명 / 체력 ${Math.round(data.scores.A.hp_ratio * 100)}% · ` +
-      `${data.player_b} 생존 ${data.scores.B.alive}명 / 체력 ${Math.round(data.scores.B.hp_ratio * 100)}%`,
-      "event-line",
-    );
+
+  // 일기토로 끝났으면 결과도 일기토 화면에서 보여준다 (그쪽에 시선이 가 있으므로)
+  const byDeathmatch = data.decision === "deathmatch";
+  const winLabel = byDeathmatch ? "일기토 승자" : "승자";
+  const resultLine = `🏆 ${winLabel}: ${data.winner_nickname}`;
+  const ringLine = data.rings_earned
+    ? `${data.player_a} +${data.rings_earned.A}링 · ${data.player_b} +${data.rings_earned.B}링`
+    : null;
+
+  if (byDeathmatch) {
+    document.getElementById("dmEventText").textContent = resultLine;
+    document.getElementById("btnDmBack").classList.remove("hidden");
+    appendDmLogLine(resultLine, "winner-line");
+    if (ringLine) appendDmLogLine(ringLine, "event-line");
+  } else {
+    document.getElementById("btnBattleBack").classList.remove("hidden");
+    document.getElementById("battleEventText").textContent = resultLine;
   }
-  if (data.rings_earned) {
-    appendLogLine(
-      `${data.player_a} +${data.rings_earned.A}링 · ${data.player_b} +${data.rings_earned.B}링`,
-      "event-line",
-    );
-  }
+
+  appendLogLine(resultLine, "winner-line");
+  if (ringLine) appendLogLine(ringLine, "event-line");
   refreshRings();
 }
 

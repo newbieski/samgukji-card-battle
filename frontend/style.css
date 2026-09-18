@@ -1133,6 +1133,83 @@ input[type="text"] {
   margin-top: 0;
 }
 
+/* 데스매치(일기토) 화면 */
+
+.dm-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px 16px;
+  margin-bottom: 12px;
+  border: 4px solid var(--danger);
+  background: radial-gradient(circle at center, #2a0f1c 0%, #130818 70%);
+  position: relative;
+  overflow: hidden;
+}
+
+.dm-vs {
+  font-size: 24px;
+  color: var(--danger);
+  text-shadow: 0 0 14px var(--danger);
+}
+
+.dm-fighter {
+  flex: 1;
+  max-width: 300px;
+  padding: 14px;
+  background: rgba(20, 12, 41, 0.9);
+  border: 4px solid var(--panel-border);
+  text-align: center;
+  position: relative;
+}
+
+.dm-fighter-portrait {
+  display: block;
+  width: 100%;
+  max-width: 180px;
+  margin: 0 auto 10px;
+  aspect-ratio: 4 / 5;
+  object-fit: contain;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: #0b0620;
+}
+
+.dm-fighter-name {
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.dm-fighter-skill {
+  font-size: 9px;
+  color: #8a7bc4;
+  margin-bottom: 8px;
+}
+
+.dm-fighter-skill.ready {
+  color: var(--accent);
+  text-shadow: 0 0 6px rgba(255, 203, 71, 0.8);
+}
+
+.dm-fighter .hp-text {
+  font-size: 9px;
+  margin: 4px 0 6px;
+  color: #cfc4ff;
+}
+
+.dm-fighter.dm-dead {
+  opacity: 0.4;
+  filter: grayscale(1);
+}
+
+.dm-fighter.flash-hit { animation: flash-hit 0.4s ease-out; }
+.dm-fighter.flash-skill-hit { animation: flash-skill-hit 0.5s ease-out; }
+.dm-fighter.flash-heal { animation: flash-heal 0.4s ease-out; }
+.dm-fighter.flash-buff { animation: flash-buff 0.4s ease-out; }
+.dm-fighter.flash-debuff { animation: flash-debuff 0.4s ease-out; }
+.dm-fighter.flash-miss { animation: flash-miss 0.4s ease-out; }
+
 /* 패키지 뽑기 결과 */
 .multi-draw-result {
   margin-bottom: 16px;
