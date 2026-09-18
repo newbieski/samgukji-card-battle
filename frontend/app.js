@@ -577,6 +577,7 @@ const battle = {
   fastForward: false,
   catchUp: 0,                // 선택 직전, 텀 없이 몰아 재생할 밀린 이벤트 수
   promptTurn: null,          // {side, name} - 선택창이 떠 있는 동안의 "지금 차례"
+  pickKeys: null,            // Set<"side:pos"> - 지금 고를 수 있는 카드 (효과를 펼쳐 보여줌)
   targetContext: null,       // {mode:"actor"|"target", ...} - 내가 카드를 골라야 할 때
   pendingResult: null,       // 재생이 끝나면 띄울 전투 결과
   playerNames: { A: "A팀", B: "B팀" },
@@ -619,6 +620,7 @@ function resetBattleUI() {
   battle.fastForward = false;
   battle.catchUp = 0;
   battle.promptTurn = null;
+  battle.pickKeys = null;
   battle.pendingResult = null;
   battle.currentActor = null;
   clearTargetPrompt();
@@ -690,8 +692,19 @@ function cardSlotHtml(side, pos, card) {
     && battle.currentActor.side === side && battle.currentActor.pos === pos;
   const role = skillRole(card.skill_effect_type);
   const skillReady = !dead && card.max_mp && card.mp >= card.max_mp;
+  // 지금 고를 수 있는 카드는 스킬 효과를 접어두지 않고 펼쳐서 보여준다.
+  // 평소에 다 펼쳐두면 화면이 빽빽해지고, 정작 고를 때는 툴팁을 하나씩
+  // 올려봐야 후보를 비교할 수 있어서 이 순간에만 꺼낸다.
+  const choosing = !dead && battle.pickKeys?.has(`${side}:${pos}`);
+  const detail = choosing ? `
+        <div class="battle-card-detail">
+          <div class="detail-role">${role.icon} ${role.label}</div>
+          <div class="detail-effect">${card.skill_effect_text ?? ""}</div>
+          <div class="detail-mp${skillReady ? " ready" : ""}">${
+            skillReady ? "⚡ 스킬 사용 가능" : `MP ${card.mp}/${card.max_mp}`}</div>
+        </div>` : "";
   return `
-    <div class="battle-card rarity-${card.rarity}${dead ? " dead" : ""}${acting ? " acting" : ""}" data-side="${side}" data-pos="${pos}">
+    <div class="battle-card rarity-${card.rarity}${dead ? " dead" : ""}${acting ? " acting" : ""}${choosing ? " choosing" : ""}" data-side="${side}" data-pos="${pos}">
       <div class="battle-card-body">
         ${rarityBadgesHtml(card.rarity)}
         <img class="battle-card-portrait" src="${portraitSrc(card.name)}" alt=""
@@ -702,9 +715,14 @@ function cardSlotHtml(side, pos, card) {
           <span class="role-icon">${role.icon}</span>${card.skill_name ?? ""}
         </div>
         <div class="hp-bar-track small"><div class="hp-bar-fill${hpPct <= 30 ? " low" : ""}" style="width:${hpPct}%"></div></div>
-        <div class="mp-bar-track small"><div class="mp-bar-fill${mpPct >= 100 ? " full" : ""}" style="width:${mpPct}%"></div></div>
+        <div class="mp-bar-track small"><div class="mp-bar-fill${mpPct >= 100 ? " full" : ""}" style="width:${mpPct}%"></div></div>${detail}
       </div>
     </div>`;
+}
+
+function renderBothDecks() {
+  renderDeckColumn("A");
+  renderDeckColumn("B");
 }
 
 function renderDeckColumn(side) {
@@ -1220,14 +1238,17 @@ function markPromptTurn(side, actorName) {
 }
 
 function clearTargetPrompt() {
+  const hadPick = battle.pickKeys !== null;
   battle.targetContext = null;
   battle.promptTurn = null;
+  battle.pickKeys = null;
   document.getElementById("targetPrompt").classList.add("hidden");
   document.querySelectorAll(".battle-card.targetable").forEach((el) => {
     el.classList.remove("targetable");
     el.onclick = null;
   });
   clearActionPrompt();
+  if (hadPick) renderBothDecks();   // 펼쳐뒀던 스킬 효과를 다시 접는다
 }
 
 function sendPick(pos) {
@@ -1241,11 +1262,13 @@ function showPickPrompt(mode, data) {
   catchUpBattleQueue();
   markPromptTurn(data.side, mode === "target" ? data.actor : null);
   battle.targetContext = { ...data, mode };
+  battle.pickKeys = new Set(
+    (data[PICK_MODES[mode].listKey] ?? []).map((t) => `${t.side}:${t.pos}`));
   const prompt = document.getElementById("targetPrompt");
   prompt.textContent =
     `${PICK_MODES[mode].message(data)} (${data.timeout_sec}초 안에 고르지 않으면 자동으로 선택됩니다)`;
   prompt.classList.remove("hidden");
-  highlightTargets();
+  renderBothDecks();   // 후보 카드의 스킬 효과를 펼치고, targetable 표시도 다시 입힌다
 }
 
 function clearActionPrompt() {
