@@ -78,7 +78,7 @@ SCENARIO_BATTLES = [
         "key": "yellowturban",
         "name": "황건적의 난",
         "year": 184,
-        "scene": "guandu",          # 전용 배경 생성 전까지 임시
+        "scene": "yellowturban",
         "intro": "창천은 이미 죽었고 황천이 서리라. 태평도의 깃발이 중원을 뒤덮었다.",
         "enemy_pool": ["장각", "장보", "장량", "관정", "한수", "기령", "장훈"],
         "fixed_deck": ["유비", "관우", "장비", "공손찬", "조조"],
@@ -87,7 +87,7 @@ SCENARIO_BATTLES = [
         "key": "hulaoguan",
         "name": "반동탁 연합",
         "year": 190,
-        "scene": "changban",        # 전용 배경 생성 전까지 임시
+        "scene": "hulaoguan",
         "intro": "십팔로 제후가 모였으나, 호뢰관 앞에 선 것은 천하무쌍의 여포였다.",
         "enemy_pool": ["동탁", "여포", "화웅", "초선", "장수", "가후", "한수"],
         "fixed_deck": ["원소", "조조", "유비", "관우", "장비"],

@@ -1,5 +1,5 @@
 """
-전투 배경 이미지 생성 (삼국지 유명 전투 10곳).
+전투 배경 이미지 생성 (삼국지 유명 전투 12곳).
 
 사용법:
     python generate_battle_scenes.py            # 아직 없는 것만 생성
@@ -22,6 +22,14 @@ STYLE_SUFFIX = (
 )
 
 SCENES = {
+    # 아래 둘은 폭력 묘사를 넣으면 Nova Canvas 콘텐츠 필터에 걸린다.
+    # 인물·무기 대신 풍경과 깃발 위주로 분위기를 낸다.
+    "yellowturban": "vast dry farmland plain at dawn in ancient China, countless yellow cloth banners and "
+                    "streamers planted across the fields, distant earthen village and watchtower, "
+                    "golden dust haze, wind-blown wheat",
+    "hulaoguan": "massive ancient Chinese stone fortress gate built into a steep rocky mountain pass at dusk, "
+                 "a wide plain below covered with many colorful army banners and rows of tents, "
+                 "torches glowing, deep purple and orange sky",
     "guandu": "Battle of Guandu: burning grain supply wagons at night on a dusty northern Chinese plain, "
               "two ancient armies clashing, orange fire glow against dark sky",
     "redcliffs": "Battle of Red Cliffs: burning warships chained together on a wide river at night, "
