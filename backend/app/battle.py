@@ -139,6 +139,31 @@ def _stun_duration(potency_pct: int) -> int:
     return 1
 
 
+def _build_turn_order(deck_a: list[BattleCard], deck_b: list[BattleCard]) -> list[tuple[str, BattleCard]]:
+    """양 진영이 한 명씩 번갈아 행동하도록 순서를 짠다.
+
+    진영 안에서는 무력이 높은 카드가 먼저 나서고, 선공은 가장 빠른 카드를 가진
+    쪽이 가져간다. 한쪽 인원이 더 많으면 남는 카드는 뒤에 이어서 행동한다.
+    (스킬로 얻는 추가 행동만 이 번갈아 규칙의 예외다.)
+    """
+    queue_a = [("A", c) for _, c in _alive_with_index(deck_a)]
+    queue_b = [("B", c) for _, c in _alive_with_index(deck_b)]
+    queue_a.sort(key=lambda t: t[1].war_stat, reverse=True)
+    queue_b.sort(key=lambda t: t[1].war_stat, reverse=True)
+
+    a_lead = queue_a[0][1].war_stat if queue_a else -1
+    b_lead = queue_b[0][1].war_stat if queue_b else -1
+    first, second = (queue_a, queue_b) if a_lead >= b_lead else (queue_b, queue_a)
+
+    order = []
+    for i in range(max(len(first), len(second))):
+        if i < len(first):
+            order.append(first[i])
+        if i < len(second):
+            order.append(second[i])
+    return order
+
+
 async def _pick_target(side: str, actor: BattleCard, targets: list[tuple[int, BattleCard]], choose_target):
     """targets가 하나뿐이면 그냥 그걸 쓰고, 여럿이면 choose_target 콜백에 물어본다."""
     if len(targets) == 1:
@@ -380,18 +405,22 @@ async def _tick_plague(decks: dict, emit) -> None:
                 })
 
 
-async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], emit, choose_target) -> dict:
+async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], emit, choose_target,
+                           names: dict | None = None) -> dict:
     """
     emit(event: dict) -> None (awaitable): 이벤트가 생길 때마다 즉시 호출됨 (실시간 중계용).
     choose_target(side, actor, targets) -> (idx, BattleCard) (awaitable): 대상이 둘 이상일 때
       호출됨. 사람 턴이면 웹소켓으로 물어보고, AI 위임이면 알아서 골라서 반환하면 된다.
+    names: {"A": 닉네임, "B": 닉네임} - 차례 표시에 쓴다.
     """
     decks = {"A": deck_a, "B": deck_b}
     sides = {"A": SideState(), "B": SideState()}
+    names = names or {"A": "A팀", "B": "B팀"}
 
     await emit({
         "kind": "battle_start",
         "deck_a": _deck_snapshot(deck_a), "deck_b": _deck_snapshot(deck_b),
+        "names": names,
         "text": "전투 시작!",
     })
 
@@ -400,10 +429,7 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
         if not _alive_with_index(deck_a) or not _alive_with_index(deck_b):
             break
         round_no += 1
-        queue = sorted(
-            [("A", c) for _, c in _alive_with_index(deck_a)] + [("B", c) for _, c in _alive_with_index(deck_b)],
-            key=lambda t: t[1].war_stat, reverse=True,
-        )
+        queue = _build_turn_order(deck_a, deck_b)
         await emit({"kind": "round_start", "round": round_no, "text": f"--- {round_no}라운드 ---"})
 
         for side, card in queue:
@@ -412,6 +438,12 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
             enemy_side = "B" if side == "A" else "A"
             if not _alive_with_index(decks[enemy_side]) or not _alive_with_index(decks[side]):
                 break
+
+            await emit({
+                "kind": "turn_start",
+                "side": side, "pos": decks[side].index(card), "name": card.name,
+                "text": f"{names[side]}의 차례 - {card.name}",
+            })
 
             if card.stun_turns > 0:
                 card.stun_turns -= 1

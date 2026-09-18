@@ -435,7 +435,10 @@ async def _maybe_run_battle(room: Room) -> None:
             finally:
                 player.pending_target = None
 
-        result = await run_team_battle(deck_a, deck_b, emit, choose_target)
+        result = await run_team_battle(
+            deck_a, deck_b, emit, choose_target,
+            names={"A": p1.nickname, "B": p2.nickname},
+        )
         winner_nickname = p1.nickname if result["winner"] == "A" else p2.nickname
 
         p1_reward = BATTLE_WIN_REWARD if result["winner"] == "A" else BATTLE_LOSE_REWARD

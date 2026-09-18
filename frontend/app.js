@@ -463,6 +463,8 @@ const battle = {
   fastForward: false,
   targetContext: null,       // {actor, targets:[{side,pos,...}]} - 내가 대상을 골라야 할 때
   pendingResult: null,       // 재생이 끝나면 띄울 전투 결과
+  playerNames: { A: "A팀", B: "B팀" },
+  currentActor: null,        // {side, pos} - 지금 행동하는 카드
 };
 
 function getBattleCard(side, pos) {
@@ -500,7 +502,9 @@ function resetBattleUI() {
   battle.playing = false;
   battle.fastForward = false;
   battle.pendingResult = null;
+  battle.currentActor = null;
   clearTargetPrompt();
+  document.getElementById("turnIndicator").classList.add("hidden");
   document.getElementById("battleLog").innerHTML = "";
   document.getElementById("battleEventText").textContent = "전투 시작!";
   document.getElementById("btnBattleSkip").classList.remove("hidden");
@@ -525,7 +529,8 @@ async function pumpBattleQueue() {
     const ev = battle.queue.shift();
     applyBattleEvent(ev);
     updateSkipButton();
-    if (!battle.fastForward && ev.kind !== "battle_start") {
+    // turn_start는 "누구 차례"만 알려주는 표시용이라 따로 텀을 두지 않는다
+    if (!battle.fastForward && ev.kind !== "battle_start" && ev.kind !== "turn_start") {
       await new Promise((resolve) => setTimeout(resolve, EVENT_DELAY_MS));
     }
   }
@@ -543,8 +548,10 @@ function cardSlotHtml(side, pos, card) {
     card.stunned ? `<span class="status-badge" title="무력화">💫</span>` : "",
     card.infected ? `<span class="status-badge" title="역병">☠️</span>` : "",
   ].join("");
+  const acting = !dead && battle.currentActor
+    && battle.currentActor.side === side && battle.currentActor.pos === pos;
   return `
-    <div class="battle-card rarity-${card.rarity}${dead ? " dead" : ""}" data-side="${side}" data-pos="${pos}">
+    <div class="battle-card rarity-${card.rarity}${dead ? " dead" : ""}${acting ? " acting" : ""}" data-side="${side}" data-pos="${pos}">
       <div class="battle-card-body">
         ${rarityBadgesHtml(card.rarity)}
         <img class="battle-card-portrait" src="${portraitSrc(card.name)}" alt=""
@@ -817,10 +824,21 @@ function playEventEffects(ev) {
   }
 }
 
+function showTurnIndicator(side, cardName) {
+  const el = document.getElementById("turnIndicator");
+  el.classList.remove("hidden", "side-a", "side-b");
+  el.classList.add(side === "A" ? "side-a" : "side-b");
+  el.innerHTML = `<span class="turn-player">${battle.playerNames[side] ?? side}</span> 차례 · ${cardName}`;
+}
+
 function applyBattleEvent(ev) {
   if (ev.kind === "battle_start") {
     battle.decks.A = ev.deck_a.map((c) => ({ ...c }));
     battle.decks.B = ev.deck_b.map((c) => ({ ...c }));
+    if (ev.names) battle.playerNames = ev.names;
+  } else if (ev.kind === "turn_start") {
+    battle.currentActor = { side: ev.side, pos: ev.pos };
+    showTurnIndicator(ev.side, ev.name);
   } else {
     // 방금 행동한 카드는 더 이상 무력화 상태가 아니다 (스턴이 그새 풀렸으니까 움직인 것)
     if (ev.actor_side !== undefined && ev.actor_pos !== undefined) {
@@ -833,10 +851,13 @@ function applyBattleEvent(ev) {
   renderDeckColumn("A");
   renderDeckColumn("B");
   playEventEffects(ev);
-  appendLogLine(ev.text, ev.kind === "round_start" ? "round-line" : "event-line");
 
-  if (ev.kind !== "battle_start") {
-    document.getElementById("battleEventText").textContent = ev.text;
+  // 차례 표시는 위쪽 표시줄로 충분해서 로그/문구까지 채우진 않는다
+  if (ev.kind !== "turn_start") {
+    appendLogLine(ev.text, ev.kind === "round_start" ? "round-line" : "event-line");
+    if (ev.kind !== "battle_start") {
+      document.getElementById("battleEventText").textContent = ev.text;
+    }
   }
 }
 
@@ -886,6 +907,10 @@ function maybeShowBattleResult() {
   if (!data || battle.playing || battle.queue.length > 0) return;
   battle.pendingResult = null;
 
+  battle.currentActor = null;
+  renderDeckColumn("A");
+  renderDeckColumn("B");
+  document.getElementById("turnIndicator").classList.add("hidden");
   document.getElementById("battleTitle").textContent = `${data.player_a} vs ${data.player_b}`;
   clearTargetPrompt();
   document.getElementById("btnBattleSkip").classList.add("hidden");

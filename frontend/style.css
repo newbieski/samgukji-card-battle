@@ -662,6 +662,35 @@ input[type="text"] {
   border: 2px solid var(--accent);
 }
 
+/* 지금 누구 차례인지 */
+.turn-indicator {
+  text-align: center;
+  font-size: 11px;
+  padding: 7px;
+  margin-bottom: 8px;
+  background: #140c29;
+  border: 2px solid var(--panel-border);
+}
+
+.turn-indicator .turn-player {
+  color: var(--accent);
+}
+
+.turn-indicator.side-a { border-color: #4fa8ff; }
+.turn-indicator.side-b { border-color: #ff8a3d; }
+
+/* 지금 행동하는 카드 */
+@keyframes acting-glow {
+  0%, 100% { box-shadow: 0 0 8px #fff6c9; }
+  50% { box-shadow: 0 0 20px #fff6c9; }
+}
+
+.battle-card.acting {
+  border-color: #fff6c9;
+  animation: acting-glow 0.9s ease-in-out infinite;
+  z-index: 2;
+}
+
 .battle-event-text {
   min-height: 2.4em;
   text-align: center;
