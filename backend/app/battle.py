@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 ENHANCE_STEP = 0.05          # 강화 1레벨당 스탯 +5%
 MP_FILL_ATTACKS = 3          # 기본 공격 약 3회면 MP가 가득 참
 BASE_HIT_CHANCE = 0.95
-DEF_DAMAGE_FACTOR = 0.5      # 피해 = atk - def * DEF_DAMAGE_FACTOR
+DEF_DAMAGE_FACTOR = 0.35     # 피해 = atk - def * DEF_DAMAGE_FACTOR
 ENEMY_TEAM_DAMAGE_BONUS = 1.2  # '전체 공격' 스킬은 단일 대상보다 더 강하게 처리
 MAX_ROUNDS = 30
 
@@ -167,11 +167,34 @@ def _alive_with_index(deck: list[BattleCard]) -> list[tuple[int, BattleCard]]:
 
 
 def _stun_duration(potency_pct: int) -> int:
-    if potency_pct >= 40:
+    """등급이 오를수록 1 -> 2 -> 3턴. (스킬 위력표 E15/D22/C30/B40/A55/S75 기준)"""
+    if potency_pct >= 55:
         return 3
-    if potency_pct >= 22:
+    if potency_pct >= 30:
         return 2
     return 1
+
+
+def judge_by_points(deck_a: list[BattleCard], deck_b: list[BattleCard]) -> tuple[str, dict]:
+    """라운드 제한에 걸렸을 때의 판정승 로직 (전멸승과 분리해서 따로 계산한다).
+
+    생존 인원을 먼저 보고, 같으면 남은 체력 비율로 가른다.
+    """
+    def score(deck: list[BattleCard]) -> dict:
+        total_max = max(1, sum(c.max_hp for c in deck))
+        return {
+            "alive": len([c for c in deck if c.hp > 0]),
+            "hp_ratio": round(sum(max(c.hp, 0) for c in deck) / total_max, 4),
+        }
+
+    score_a, score_b = score(deck_a), score(deck_b)
+    if score_a["alive"] != score_b["alive"]:
+        winner = "A" if score_a["alive"] > score_b["alive"] else "B"
+    elif score_a["hp_ratio"] != score_b["hp_ratio"]:
+        winner = "A" if score_a["hp_ratio"] > score_b["hp_ratio"] else "B"
+    else:
+        winner = "A"  # 완전 동률은 사실상 없지만, 보상 처리를 위해 한쪽으로 정한다
+    return winner, {"A": score_a, "B": score_b}
 
 
 def _build_turn_order(deck_a: list[BattleCard], deck_b: list[BattleCard]) -> list[tuple[str, BattleCard]]:
@@ -501,14 +524,20 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
         await _tick_plague(decks, emit)
 
     alive_a, alive_b = _alive_with_index(deck_a), _alive_with_index(deck_b)
+    scores = None
     if alive_a and not alive_b:
-        winner = "A"
+        winner, decision = "A", "rout"
     elif alive_b and not alive_a:
-        winner = "B"
+        winner, decision = "B", "rout"
     else:
-        hp_ratio_a = sum(max(c.hp, 0) for c in deck_a) / max(1, sum(c.max_hp for c in deck_a))
-        hp_ratio_b = sum(max(c.hp, 0) for c in deck_b) / max(1, sum(c.max_hp for c in deck_b))
-        winner = "A" if hp_ratio_a >= hp_ratio_b else "B"
+        # 라운드 제한에 걸린 경우 - 전멸승과 구분되는 판정승
+        winner, scores = judge_by_points(deck_a, deck_b)
+        decision = "timeout"
 
-    await emit({"kind": "battle_end", "winner_side": winner, "text": "전투 종료."})
-    return {"winner": winner}
+    end_text = "전투 종료." if decision == "rout" else f"{MAX_ROUNDS}라운드 종료 - 판정으로 승부를 가립니다."
+    await emit({
+        "kind": "battle_end",
+        "winner_side": winner, "decision": decision, "scores": scores,
+        "text": end_text,
+    })
+    return {"winner": winner, "decision": decision, "scores": scores}

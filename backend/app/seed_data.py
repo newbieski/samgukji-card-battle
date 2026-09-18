@@ -26,36 +26,45 @@ mp_drain/plague)는 원래 전투에 안 쓰이던 지력/매력/정치력 컨�
   - mp_drain:   적 단일 대상의 MP를 potency%만큼 빼앗는다 (stat: mp)
   - plague:     적 단일 대상을 감염시켜 매 라운드 피해를 입히고, 같은 편 다른 카드에게
                 확률적으로 옮겨붙는다 (scope=enemy)
-potency(%)는 등급별로 고정 (E10/D16/C22/B30/A40/S55)이며 밸런스 조정 시 이 값만 바꾸면 된다.
+potency(%)는 등급별로 고정 (E15/D22/C30/B40/A55/S75)이며 밸런스 조정 시 이 값만 바꾸면 된다.
 """
 
 from db import get_connection
 
-# 유형별로 5대 기본 스탯(지력/무력/통솔력/매력/정치력)에 곱하는 배율
+# 유형별 배율. hp/atk까지 유형을 타게 해서 장수마다 체감되는 차이를 만든다.
+# (예전에는 hp/atk가 유형과 무관해서 무력형이나 정치형이나 때리는 힘이 같았고,
+#  그 결과 공격력이 방어력에 계속 막혀 "1의 피해"만 나오는 전투가 잦았다.)
 ARCHETYPES = {
-    "무력형": {"int": 0.50, "war": 1.00, "lead": 0.70, "charm": 0.50, "pol": 0.40},
-    "지력형": {"int": 1.00, "war": 0.40, "lead": 0.55, "charm": 0.50, "pol": 0.75},
-    "통솔형": {"int": 0.55, "war": 0.75, "lead": 1.00, "charm": 0.60, "pol": 0.55},
-    "매력형": {"int": 0.50, "war": 0.45, "lead": 0.65, "charm": 1.00, "pol": 0.60},
-    "정치형": {"int": 0.70, "war": 0.35, "lead": 0.50, "charm": 0.55, "pol": 1.00},
-    "만능형": {"int": 0.75, "war": 0.75, "lead": 0.75, "charm": 0.75, "pol": 0.75},
+    "무력형": {"hp": 1.15, "atk": 1.40, "int": 0.50, "war": 1.00, "lead": 0.70, "charm": 0.50, "pol": 0.40},
+    "지력형": {"hp": 0.85, "atk": 0.85, "int": 1.00, "war": 0.40, "lead": 0.55, "charm": 0.50, "pol": 0.75},
+    "통솔형": {"hp": 1.25, "atk": 1.00, "int": 0.55, "war": 0.75, "lead": 1.00, "charm": 0.60, "pol": 0.55},
+    "매력형": {"hp": 0.95, "atk": 0.80, "int": 0.50, "war": 0.45, "lead": 0.65, "charm": 1.00, "pol": 0.60},
+    "정치형": {"hp": 0.80, "atk": 0.70, "int": 0.70, "war": 0.35, "lead": 0.50, "charm": 0.55, "pol": 1.00},
+    "만능형": {"hp": 1.00, "atk": 1.00, "int": 0.75, "war": 0.75, "lead": 0.75, "charm": 0.75, "pol": 0.75},
 }
 
 # 전투용 스탯(hp/mp/atk)과 5대 스탯의 공통 기준치 (C등급 = 가중치 1.0 기준값).
-BASE_STATS = {"hp": 145, "mp": 65, "atk": 27, "stat": 75}
+# hp는 이전(145) 대비 90% 수준으로 낮추고, atk는 방어력에 막혀 피해가 1로
+# 깎이지 않도록 크게 올렸다.
+BASE_STATS = {"hp": 130, "mp": 65, "atk": 52, "stat": 75}
 
 # 등급 가중치. 기준치에 이 값을 곱해서 최종 스탯을 낸다 - 숫자 하나만 조정하면
 # 그 등급의 hp/mp/atk/5대 스탯이 전부 같이 움직인다. S가 최상위, E가 최하위.
 RARITY_WEIGHT = {"E": 0.65, "D": 0.82, "C": 1.00, "B": 1.25, "A": 1.55, "S": 2.00}
 
-# 등급별 고유 스킬 위력(%) 기준값
-SKILL_POTENCY = {"E": 10, "D": 16, "C": 22, "B": 30, "A": 40, "S": 55}
+# 등급별 고유 스킬 위력(%) 기준값. 스킬 한 방이 전황을 바꾸도록 넉넉하게 잡는다.
+SKILL_POTENCY = {"E": 15, "D": 22, "C": 30, "B": 40, "A": 55, "S": 75}
+
+# 이름 기반 편차 폭(비율). 값에 비례해서 흔들리므로 등급이 높을수록 절대 편차도 커진다.
+VARIANCE_SPREAD = {"hp": 0.12, "mp": 0.10, "atk": 0.12, "stat": 0.10}
 
 
-def _variance(key: str, scale: int) -> int:
-    """이름 기반 결정론적 편차값 (-scale ~ +scale)."""
-    h = sum(ord(c) for c in key)
-    return (h % (scale * 2 + 1)) - scale
+def _variance_ratio(key: str, spread: float) -> float:
+    """이름 기반 결정론적 편차 배수 (1-spread ~ 1+spread)."""
+    steps = 201
+    h = sum(ord(c) * (i + 1) for i, c in enumerate(key))
+    t = (h % steps) / (steps - 1)
+    return 1 + (t * 2 - 1) * spread
 
 
 def build_stats(name: str, rarity: str, archetype: str):
@@ -63,14 +72,17 @@ def build_stats(name: str, rarity: str, archetype: str):
     mult = ARCHETYPES[archetype]
     stat = BASE_STATS["stat"] * weight
 
-    hp = round(BASE_STATS["hp"] * weight) + _variance(name + "hp", 15)
-    mp = round(BASE_STATS["mp"] * weight) + _variance(name + "mp", 8)
-    atk = round(BASE_STATS["atk"] * weight) + _variance(name + "atk", 4)
-    int_stat = round(stat * mult["int"]) + _variance(name + "int", 5)
-    war_stat = round(stat * mult["war"]) + _variance(name + "war", 5)
-    leadership = round(stat * mult["lead"]) + _variance(name + "lead", 5)
-    charm = round(stat * mult["charm"]) + _variance(name + "charm", 5)
-    politics = round(stat * mult["pol"]) + _variance(name + "pol", 5)
+    def spread(part: str, base: float, key: str) -> int:
+        return max(1, round(base * _variance_ratio(name + key, VARIANCE_SPREAD[part])))
+
+    hp = spread("hp", BASE_STATS["hp"] * weight * mult["hp"], "hp")
+    mp = spread("mp", BASE_STATS["mp"] * weight, "mp")
+    atk = spread("atk", BASE_STATS["atk"] * weight * mult["atk"], "atk")
+    int_stat = spread("stat", stat * mult["int"], "int")
+    war_stat = spread("stat", stat * mult["war"], "war")
+    leadership = spread("stat", stat * mult["lead"], "lead")
+    charm = spread("stat", stat * mult["charm"], "charm")
+    politics = spread("stat", stat * mult["pol"], "pol")
 
     return hp, mp, atk, int_stat, war_stat, leadership, charm, politics
 

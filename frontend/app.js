@@ -1010,8 +1010,17 @@ function maybeShowBattleResult() {
   clearTargetPrompt();
   document.getElementById("btnBattleSkip").classList.add("hidden");
   document.getElementById("btnBattleBack").classList.remove("hidden");
-  document.getElementById("battleEventText").textContent = `🏆 승자: ${data.winner_nickname}`;
-  appendLogLine(`🏆 승자: ${data.winner_nickname}`, "winner-line");
+  const byTimeout = data.decision === "timeout";
+  const winLabel = byTimeout ? "판정승" : "승자";
+  document.getElementById("battleEventText").textContent = `🏆 ${winLabel}: ${data.winner_nickname}`;
+  appendLogLine(`🏆 ${winLabel}: ${data.winner_nickname}`, "winner-line");
+  if (byTimeout && data.scores) {
+    appendLogLine(
+      `판정 기준 - ${data.player_a} 생존 ${data.scores.A.alive}명 / 체력 ${Math.round(data.scores.A.hp_ratio * 100)}% · ` +
+      `${data.player_b} 생존 ${data.scores.B.alive}명 / 체력 ${Math.round(data.scores.B.hp_ratio * 100)}%`,
+      "event-line",
+    );
+  }
   if (data.rings_earned) {
     appendLogLine(
       `${data.player_a} +${data.rings_earned.A}링 · ${data.player_b} +${data.rings_earned.B}링`,
