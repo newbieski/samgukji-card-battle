@@ -482,6 +482,17 @@ function updateSkipButton() {
     : "연출 건너뛰기 (밀린 이벤트 없음)";
 }
 
+const BATTLE_SCENES = [
+  "guandu", "redcliffs", "huarong", "changban", "yiling",
+  "hanzhong", "hefei", "dingjun", "wuzhang", "fancheng",
+];
+
+function pickRandomBattleScene() {
+  const key = BATTLE_SCENES[Math.floor(Math.random() * BATTLE_SCENES.length)];
+  document.querySelector(".battle-stage").style.backgroundImage =
+    `url("assets/scenes/battle_${key}.png")`;
+}
+
 function resetBattleUI() {
   battle.decks = { A: [], B: [] };
   battle.queue = [];
@@ -493,6 +504,7 @@ function resetBattleUI() {
   document.getElementById("btnBattleSkip").classList.remove("hidden");
   document.getElementById("btnBattleBack").classList.add("hidden");
   updateSkipButton();
+  pickRandomBattleScene();
   showScreen("battle");
 }
 
@@ -519,7 +531,7 @@ async function pumpBattleQueue() {
 }
 
 function cardSlotHtml(side, pos, card) {
-  if (!card) return `<div class="battle-slot empty"></div>`;
+  if (!card) return `<div class="battle-card empty"></div>`;
   const dead = card.hp <= 0;
   const hpPct = card.max_hp ? Math.max(0, Math.min(100, (card.hp / card.max_hp) * 100)) : 0;
   const mpPct = card.max_mp ? Math.max(0, Math.min(100, (card.mp / card.max_mp) * 100)) : 0;
@@ -528,15 +540,13 @@ function cardSlotHtml(side, pos, card) {
     card.infected ? `<span class="status-badge" title="역병">☠️</span>` : "",
   ].join("");
   return `
-    <div class="battle-slot rarity-${card.rarity}${dead ? " dead" : ""}" data-side="${side}" data-pos="${pos}">
+    <div class="battle-card rarity-${card.rarity}${dead ? " dead" : ""}" data-side="${side}" data-pos="${pos}">
       ${rarityBadgesHtml(card.rarity)}
-      <img class="battle-slot-portrait" src="${portraitSrc(card.name)}" alt=""
+      <img class="battle-card-portrait" src="${portraitSrc(card.name)}" alt=""
            onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
-      <div class="battle-slot-info">
-        <div class="battle-slot-name">${card.name}<span class="battle-slot-badges">${badges}</span></div>
-        <div class="hp-bar-track small"><div class="hp-bar-fill${hpPct <= 30 ? " low" : ""}" style="width:${hpPct}%"></div></div>
-        <div class="mp-bar-track small"><div class="mp-bar-fill${mpPct >= 100 ? " full" : ""}" style="width:${mpPct}%"></div></div>
-      </div>
+      <div class="battle-card-name">${card.name}<span class="battle-card-badges">${badges}</span></div>
+      <div class="hp-bar-track small"><div class="hp-bar-fill${hpPct <= 30 ? " low" : ""}" style="width:${hpPct}%"></div></div>
+      <div class="mp-bar-track small"><div class="mp-bar-fill${mpPct >= 100 ? " full" : ""}" style="width:${mpPct}%"></div></div>
     </div>`;
 }
 
@@ -546,14 +556,49 @@ function renderDeckColumn(side) {
   if (battle.targetContext) highlightTargets();
 }
 
-const FLASH_CLASSES = ["flash-hit", "flash-skill-hit", "flash-heal", "flash-buff", "flash-debuff", "flash-miss"];
+const FLASH_CLASSES = [
+  "flash-hit", "flash-skill-hit", "flash-heal", "flash-buff",
+  "flash-debuff", "flash-miss", "flash-lunge", "flash-faint",
+];
+
+function battleCardEl(side, pos) {
+  return document.querySelector(`.battle-card[data-side="${side}"][data-pos="${pos}"]`);
+}
 
 function flashSlot(side, pos, kind) {
-  const el = document.querySelector(`.battle-slot[data-side="${side}"][data-pos="${pos}"]`);
+  const el = battleCardEl(side, pos);
   if (!el) return;
   el.classList.remove(...FLASH_CLASSES);
   void el.offsetWidth; // 강제 리플로우로 애니메이션 재시작
   el.classList.add(`flash-${kind}`);
+}
+
+function spawnSpark(side, pos, isSkill) {
+  const el = battleCardEl(side, pos);
+  if (!el) return;
+  const spark = document.createElement("div");
+  spark.className = isSkill ? "hit-spark skill" : "hit-spark";
+  el.appendChild(spark);
+  spark.addEventListener("animationend", () => spark.remove());
+}
+
+function spawnPopup(side, pos, text, kind) {
+  const el = battleCardEl(side, pos);
+  if (!el) return;
+  const popup = document.createElement("div");
+  popup.className = `dmg-popup ${kind}`;
+  popup.textContent = text;
+  el.appendChild(popup);
+  popup.addEventListener("animationend", () => popup.remove());
+}
+
+function flareStage() {
+  const stage = document.querySelector(".battle-stage");
+  if (!stage) return;
+  const flare = document.createElement("div");
+  flare.className = "stage-flare";
+  stage.appendChild(flare);
+  flare.addEventListener("animationend", () => flare.remove());
 }
 
 let skillBannerTimer = null;
@@ -630,20 +675,33 @@ function applyEventToState(ev) {
 function playEventEffects(ev) {
   switch (ev.kind) {
     case "attack":
+      flashSlot(ev.actor_side, ev.actor_pos, "lunge");
       flashSlot(ev.target_side, ev.target_pos, "hit");
+      spawnSpark(ev.target_side, ev.target_pos, false);
+      spawnPopup(ev.target_side, ev.target_pos, `-${ev.amount}`, "damage");
       break;
     case "skill_damage":
       flashSlot(ev.target_side, ev.target_pos, "skill-hit");
+      spawnSpark(ev.target_side, ev.target_pos, true);
+      spawnPopup(ev.target_side, ev.target_pos, `-${ev.amount}`, "damage");
       break;
     case "skill_cast":
       showSkillBanner(ev.actor, ev.skill_name);
+      flareStage();
+      flashSlot(ev.actor_side, ev.actor_pos, "buff");
       break;
     case "miss":
+      flashSlot(ev.actor_side, ev.actor_pos, "lunge");
       flashSlot(ev.target_side, ev.target_pos, "miss");
+      spawnPopup(ev.target_side, ev.target_pos, "MISS", "miss");
       break;
     case "skill_heal":
+      flashSlot(ev.target_side, ev.target_pos, "heal");
+      spawnPopup(ev.target_side, ev.target_pos, `+${ev.amount}`, "heal");
+      break;
     case "skill_heal_mp":
       flashSlot(ev.target_side, ev.target_pos, "heal");
+      spawnPopup(ev.target_side, ev.target_pos, `MP +${ev.amount}`, "mp");
       break;
     case "skill_buff":
     case "extra_turn":
@@ -658,11 +716,31 @@ function playEventEffects(ev) {
       }
       break;
     case "stun":
+      flashSlot(ev.target_side, ev.target_pos, "debuff");
+      spawnPopup(ev.target_side, ev.target_pos, `💫 ${ev.duration}턴`, "debuff");
+      break;
     case "mp_drain":
       flashSlot(ev.target_side, ev.target_pos, "debuff");
+      spawnPopup(ev.target_side, ev.target_pos, `MP -${ev.amount}`, "mp");
+      break;
+    case "swap":
+      flashSlot(ev.actor_side, ev.actor_pos, "buff");
+      flashSlot(ev.target_side, ev.target_pos, "buff");
+      break;
+    case "plague_infect":
+      flashSlot(ev.target_side, ev.target_pos, "debuff");
+      spawnPopup(ev.target_side, ev.target_pos, "☠️ 역병", "debuff");
       break;
     case "plague_tick":
       flashSlot(ev.side, ev.pos, "hit");
+      spawnPopup(ev.side, ev.pos, `-${ev.amount}`, "damage");
+      break;
+    case "plague_spread":
+      flashSlot(ev.side, ev.to_pos, "debuff");
+      spawnPopup(ev.side, ev.to_pos, "☠️ 전염", "debuff");
+      break;
+    case "faint":
+      flashSlot(ev.side, ev.pos, "faint");
       break;
   }
 }
@@ -694,7 +772,7 @@ function highlightTargets() {
   const ctx = battle.targetContext;
   if (!ctx) return;
   ctx.targets.forEach((t) => {
-    const slot = document.querySelector(`.battle-slot[data-side="${t.side}"][data-pos="${t.pos}"]`);
+    const slot = battleCardEl(t.side, t.pos);
     if (!slot) return;
     slot.classList.add("targetable");
     slot.onclick = () => chooseTarget(t.pos);
@@ -704,7 +782,7 @@ function highlightTargets() {
 function clearTargetPrompt() {
   battle.targetContext = null;
   document.getElementById("targetPrompt").classList.add("hidden");
-  document.querySelectorAll(".battle-slot.targetable").forEach((el) => {
+  document.querySelectorAll(".battle-card.targetable").forEach((el) => {
     el.classList.remove("targetable");
     el.onclick = null;
   });

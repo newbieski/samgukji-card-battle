@@ -116,14 +116,15 @@ def craft_prompt(client, user_text: str, system_text: str = PROMPT_SYSTEM) -> st
     raise RuntimeError(f"모든 텍스트 모델이 실패했습니다: {last_error}")
 
 
-def generate_with_nova_canvas(client, prompt: str, seed: int, retries: int = 5) -> Image.Image | None:
+def generate_with_nova_canvas(client, prompt: str, seed: int, retries: int = 5,
+                               width: int = 512, height: int = 512) -> Image.Image | None:
     body = {
         "taskType": "TEXT_IMAGE",
         "textToImageParams": {"text": prompt},
         "imageGenerationConfig": {
             "numberOfImages": 1,
-            "height": 512,
-            "width": 512,
+            "height": height,
+            "width": width,
             "cfgScale": 8.0,
             "seed": seed % 858993459,
         },
@@ -154,12 +155,16 @@ def generate_with_nova_canvas(client, prompt: str, seed: int, retries: int = 5) 
     return None
 
 
-def pixelate(img: Image.Image, grid: int = 40, final: int = 200, colors: int = 20) -> Image.Image:
+def pixelate(img: Image.Image, grid: int = 40, final: int = 200, colors: int = 20,
+              grid_h: int | None = None, final_h: int | None = None) -> Image.Image:
     """생성 이미지를 저해상도로 평균내 축소한 뒤(LANCZOS), 팔레트를 제한하고,
-    최근접보간(NEAREST)으로 다시 확대해 블록이 살아있는 도트 느낌을 만든다."""
-    small = img.convert("RGB").resize((grid, grid), Image.LANCZOS)
+    최근접보간(NEAREST)으로 다시 확대해 블록이 살아있는 도트 느낌을 만든다.
+    grid_h/final_h를 주면 정사각형이 아닌(가로로 넓은) 이미지도 만들 수 있다."""
+    grid_h = grid_h or grid
+    final_h = final_h or final
+    small = img.convert("RGB").resize((grid, grid_h), Image.LANCZOS)
     small = small.quantize(colors=colors, method=Image.MEDIANCUT).convert("RGB")
-    return small.resize((final, final), Image.NEAREST)
+    return small.resize((final, final_h), Image.NEAREST)
 
 
 def _load_manifest() -> dict:
@@ -197,13 +202,16 @@ def generate_general_portrait(client, name: str, faction: str, archetype: str,
     return "procedural"
 
 
-def generate_scene(client, prompt: str, out_path: Path, grid: int = 64, final: int = 320) -> None:
-    """장수 카드 외의 범용 이미지(배경/아이템 등) 생성용 진입점."""
+def generate_scene(client, prompt: str, out_path: Path, grid: int = 64, final: int = 320,
+                    width: int = 512, height: int = 512,
+                    grid_h: int | None = None, final_h: int | None = None) -> None:
+    """장수 카드 외의 범용 이미지(배경/아이템 등) 생성용 진입점.
+    가로로 넓은 배경(예: 전투 배경)은 width/height와 grid_h/final_h를 같이 넓혀서 쓰면 된다."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    img = generate_with_nova_canvas(client, prompt, seed=abs(hash(prompt)))
+    img = generate_with_nova_canvas(client, prompt, seed=abs(hash(prompt)), width=width, height=height)
     if img is None:
         raise RuntimeError("Nova Canvas 생성 실패 (이 종류는 절차적 대체가 없습니다).")
-    pixelate(img, grid=grid, final=final).save(out_path)
+    pixelate(img, grid=grid, final=final, grid_h=grid_h, final_h=final_h).save(out_path)
     print(f"저장: {out_path}")
 
 
