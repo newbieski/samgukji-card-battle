@@ -665,11 +665,16 @@ async def _tick_plague(decks: dict, emit) -> None:
 
 
 async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], emit, choose_target,
-                           names: dict | None = None) -> dict:
+                           names: dict | None = None,
+                           choose_actor=None, choose_action=None) -> dict:
     """
     emit(event: dict) -> None (awaitable): 이벤트가 생길 때마다 즉시 호출됨 (실시간 중계용).
-    choose_target(side, actor, targets) -> (idx, BattleCard) (awaitable): 대상이 둘 이상일 때
-      호출됨. 사람 턴이면 웹소켓으로 물어보고, AI 위임이면 알아서 골라서 반환하면 된다.
+    choose_target(side, actor, targets) -> (idx, BattleCard) (awaitable): 대상이 둘 이상일 때 호출.
+    choose_actor(side, candidates) -> (idx, BattleCard) (awaitable, 선택): 이번 차례에 누구를
+      내보낼지 고른다. 넘기지 않으면 무력이 높은 카드가 자동으로 나선다.
+    choose_action(side, card) -> "attack" | "skill" (awaitable, 선택): MP가 다 찼을 때 스킬을
+      쓸지 아껴둘지 고른다. 넘기지 않으면 차 있으면 무조건 스킬을 쓴다.
+    사람 차례면 위 콜백들이 웹소켓으로 물어보고, AI 위임이면 알아서 정해서 반환한다.
     names: {"A": 닉네임, "B": 닉네임} - 차례 표시에 쓴다.
     """
     decks = {"A": deck_a, "B": deck_b}
@@ -683,14 +688,13 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
         "text": "전투 시작!",
     })
 
-    # 두 진영은 예외 없이 한 번씩 번갈아 행동한다. 각 진영은 자기 차례가 올 때마다
-    # 살아있는 카드를 무력 순으로 한 바퀴씩 돌려 쓴다. 인원이 적은 쪽은 같은 카드가
-    # 더 자주 나올 뿐, 행동 횟수 자체는 양쪽이 똑같다.
-    # (라운드는 A진영이 자기 카드를 한 바퀴 다 돌렸을 때 넘어간다.)
+    # 두 진영은 예외 없이 한 번씩 번갈아 행동한다. 각 진영은 한 라운드 안에서 자기 카드를
+    # 한 번씩만 쓸 수 있고(어느 순서로 낼지는 플레이어가 고른다), 한쪽이 쓸 카드를 다 쓰면
+    # 양쪽 모두 새 라운드로 넘어간다. 그래서 교대가 끊기지 않는다.
     lead_a = max((c.war_stat for c in deck_a), default=-1)
     lead_b = max((c.war_stat for c in deck_b), default=-1)
     last_side = "B" if lead_a >= lead_b else "A"   # 빠른 쪽이 선공하도록 반대편을 넣어둔다
-    rotation = {"A": 0, "B": 0}
+    acted = {"A": set(), "B": set()}
 
     round_no = 1
     await emit({"kind": "round_start", "round": round_no, "text": f"--- {round_no}라운드 ---"})
@@ -700,46 +704,56 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
             break
 
         side = "B" if last_side == "A" else "A"
-        order = sorted((c for _, c in _alive_with_index(decks[side])),
-                       key=lambda c: c.war_stat, reverse=True)
-        if not order:
-            break
-        index = rotation[side] % len(order)
-        card = order[index]
-        rotation[side] = index + 1
-        wrapped = rotation[side] >= len(order)
-        if wrapped:
-            rotation[side] = 0
+        candidates = [(i, c) for i, c in _alive_with_index(decks[side]) if id(c) not in acted[side]]
+
+        if not candidates:
+            # 이 진영이 이번 라운드에 쓸 카드를 다 썼다 -> 양쪽 다 새 라운드로
+            acted = {"A": set(), "B": set()}
+            await _tick_plague(decks, emit)
+            if not _alive_with_index(deck_a) or not _alive_with_index(deck_b):
+                break
+            round_no += 1
+            if round_no > MAX_ROUNDS:
+                break
+            await emit({"kind": "round_start", "round": round_no,
+                        "text": f"--- {round_no}라운드 ---"})
+            continue   # last_side는 그대로 두어 교대 순서를 유지한다
+
+        if choose_actor is not None and len(candidates) > 1:
+            pos, card = await choose_actor(side, candidates)
+        else:
+            pos, card = max(candidates, key=lambda t: t[1].war_stat)
+        acted[side].add(id(card))
         last_side = side
 
         await emit({
             "kind": "turn_start",
-            "side": side, "pos": decks[side].index(card), "name": card.name,
+            "side": side, "pos": pos, "name": card.name,
             "text": f"{names[side]}의 차례 - {card.name}",
         })
 
         if card.stun_turns > 0:
             card.stun_turns -= 1
-            await emit({"kind": "stunned", "side": side, "pos": decks[side].index(card), "name": card.name,
+            await emit({"kind": "stunned", "side": side, "pos": pos, "name": card.name,
                         "text": f"{card.name}은(는) 무력화 상태라 움직이지 못했다."})
-        elif card.discord_turns > 0:
+            continue
+        if card.discord_turns > 0:
             card.discord_turns -= 1
             await _discord_attack(side, card, decks, sides, emit)
-        elif card.mp >= card.max_mp:
+            continue
+
+        action = "attack"
+        if card.mp >= card.max_mp:
+            action = "skill"
+            if choose_action is not None:
+                action = await choose_action(side, card)
+
+        if action == "skill" and card.mp >= card.max_mp:
             await _use_skill(side, card, decks, sides, emit, choose_target)
             card.mp = 0
         else:
+            # 스킬을 아끼기로 했으면 MP는 그대로 둔다 (다음 차례에 다시 쓸 수 있게)
             await _basic_attack(side, card, decks, sides, emit, choose_target)
-
-        # A진영이 한 바퀴를 다 돌면 한 라운드가 지난 것으로 본다
-        if side == "A" and wrapped:
-            if not _alive_with_index(deck_a) or not _alive_with_index(deck_b):
-                break
-            await _tick_plague(decks, emit)
-            round_no += 1
-            if round_no <= MAX_ROUNDS:
-                await emit({"kind": "round_start", "round": round_no,
-                            "text": f"--- {round_no}라운드 ---"})
 
     alive_a, alive_b = _alive_with_index(deck_a), _alive_with_index(deck_b)
     if alive_a and not alive_b:

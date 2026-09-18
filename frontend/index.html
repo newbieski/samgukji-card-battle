@@ -151,9 +151,17 @@
 
       <div id="turnIndicator" class="turn-indicator hidden"></div>
       <div id="targetPrompt" class="target-prompt hidden">대상을 선택하세요</div>
+      <div id="actionPrompt" class="action-prompt hidden">
+        <span id="actionPromptText"></span>
+        <span class="action-prompt-buttons">
+          <button id="btnActionSkill" class="btn btn-primary btn-small"></button>
+          <button id="btnActionAttack" class="btn btn-small">일반 공격 (MP 아끼기)</button>
+        </span>
+      </div>
       <div id="battleEventText" class="battle-event-text">전투 시작 대기 중...</div>
 
       <div class="btn-row battle-controls">
+        <button id="btnBattleAuto" class="btn">이후 AI에게 맡기기</button>
         <button id="btnBattleSkip" class="btn" disabled>연출 건너뛰기 (밀린 이벤트 없음)</button>
         <button id="btnBattleBack" class="btn hidden">로비로</button>
       </div>

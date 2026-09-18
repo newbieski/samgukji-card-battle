@@ -456,44 +456,80 @@ async def _maybe_run_battle(room: Room) -> None:
             deck_b = _load_deck(conn, p2.deck)
         finally:
             conn.close()
+        decks_by_side = {"A": deck_a, "B": deck_b}
 
         async def emit(event: dict) -> None:
             await _broadcast(room, {"type": "battle_event", **event})
 
-        async def choose_target(side, actor, targets):
-            player = players_by_side[side]
-            if player.auto_target or player.websocket is None:
-                return _ai_pick_target(targets)
+        async def ask(player, prompt: dict, waiting_text: str):
+            """사람에게 물어보고 답을 받아온다. AI 위임/타임아웃/오류면 None을 돌려준다.
 
-            enemy_side = "B" if side == "A" else "A"
-            await emit({
-                "kind": "waiting_choice",
-                "text": f"{actor.name}의 대상 선택을 기다리는 중... (최대 {TARGET_TIMEOUT_SEC}초)",
-            })
+            전투 중에 위임으로 바꾸면 기다리던 질문이 즉시 None으로 풀려 AI가 대신 정한다.
+            """
+            if player.auto_target or player.websocket is None:
+                return None
+
+            await emit({"kind": "waiting_choice",
+                        "text": f"{waiting_text} (최대 {TARGET_TIMEOUT_SEC}초)"})
             future = asyncio.get_running_loop().create_future()
             player.pending_target = future
             try:
-                await player.websocket.send_json({
-                    "type": "await_target",
-                    "actor": actor.name,
-                    "targets": [
-                        {**card_snapshot(c), "side": enemy_side, "pos": idx} for idx, c in targets
-                    ],
-                    "timeout_sec": TARGET_TIMEOUT_SEC,
-                })
-                target_pos = await asyncio.wait_for(future, timeout=TARGET_TIMEOUT_SEC)
-                for idx, c in targets:
-                    if idx == target_pos:
-                        return idx, c
-                return _ai_pick_target(targets)
+                await player.websocket.send_json({**prompt, "timeout_sec": TARGET_TIMEOUT_SEC})
+                return await asyncio.wait_for(future, timeout=TARGET_TIMEOUT_SEC)
             except Exception:
-                return _ai_pick_target(targets)
+                return None
             finally:
                 player.pending_target = None
+
+        async def choose_actor(side, candidates):
+            """이번 차례에 내보낼 장수를 고른다. 자동이면 무력이 가장 높은 카드."""
+            player = players_by_side[side]
+            answer = await ask(
+                player,
+                {"type": "await_actor",
+                 "candidates": [{**card_snapshot(c), "side": side, "pos": idx} for idx, c in candidates]},
+                "행동할 장수 선택을 기다리는 중...",
+            )
+            for idx, c in candidates:
+                if idx == answer:
+                    return idx, c
+            return max(candidates, key=lambda t: t[1].war_stat)
+
+        async def choose_action(side, card):
+            """MP가 다 찼을 때 스킬을 쓸지 아껴둘지. 자동이면 그냥 쓴다."""
+            player = players_by_side[side]
+            answer = await ask(
+                player,
+                {"type": "await_action",
+                 "actor": {**card_snapshot(card), "side": side, "pos": decks_by_side[side].index(card)},
+                 "skill_name": card.skill_name,
+                 "skill_effect_type": card.skill_effect_type,
+                 "skill_effect_text": skill_summary(card.skill_effect_type, card.skill_scope,
+                                                    card.skill_stat, card.skill_potency)},
+                f"{card.name}의 행동 선택을 기다리는 중...",
+            )
+            return "attack" if answer == "attack" else "skill"
+
+        async def choose_target(side, actor, targets):
+            player = players_by_side[side]
+            enemy_side = "B" if side == "A" else "A"
+            answer = await ask(
+                player,
+                {"type": "await_target",
+                 "actor": actor.name,
+                 "targets": [{**card_snapshot(c), "side": enemy_side, "pos": idx} for idx, c in targets]},
+                f"{actor.name}의 대상 선택을 기다리는 중...",
+            )
+            for idx, c in targets:
+                if idx == answer:
+                    return idx, c
+            return _ai_pick_target(targets)
 
         result = await run_team_battle(
             deck_a, deck_b, emit, choose_target,
             names={"A": p1.nickname, "B": p2.nickname},
+            choose_actor=choose_actor,
+            choose_action=choose_action,
         )
         winner_nickname = p1.nickname if result["winner"] == "A" else p2.nickname
 
@@ -565,12 +601,22 @@ async def room_websocket(websocket: WebSocket, room_code: str, player_id: int):
 
             elif msg_type == "set_auto":
                 player.auto_target = bool(data.get("auto"))
+                # 전투 도중에 위임으로 바꿨다면 지금 기다리고 있는 질문도 바로 풀어준다.
+                # (그러지 않으면 이번 턴은 여전히 20초 타임아웃을 기다린다)
+                future = player.pending_target
+                if player.auto_target and future is not None and not future.done():
+                    future.set_result(None)
                 await _broadcast(room, _lobby_payload(room))
 
-            elif msg_type == "choose_target":
+            elif msg_type in ("choose_target", "choose_actor"):
                 future = player.pending_target
                 if future is not None and not future.done():
                     future.set_result(data.get("pos"))
+
+            elif msg_type == "choose_action":
+                future = player.pending_target
+                if future is not None and not future.done():
+                    future.set_result(data.get("action"))
 
     except WebSocketDisconnect:
         room.players.pop(player_id, None)

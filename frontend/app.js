@@ -7,6 +7,7 @@ const state = {
   cards: [],
   selectedDeck: [],
   ws: null,
+  autoTarget: false,   // 전투 중 선택을 AI에게 맡겼는지 (로비 체크박스 = 전투 중 버튼)
 };
 
 function showScreen(name) {
@@ -183,7 +184,11 @@ function connectWebSocket() {
     } else if (data.type === "battle_event") {
       queueBattleEvent(data);
     } else if (data.type === "await_target") {
-      showTargetPrompt(data);
+      showPickPrompt("target", data);
+    } else if (data.type === "await_actor") {
+      showPickPrompt("actor", data);
+    } else if (data.type === "await_action") {
+      showActionPrompt(data);
     } else if (data.type === "battle_result") {
       onBattleResult(data);
     } else if (data.type === "error") {
@@ -215,7 +220,9 @@ function renderLobby(data) {
     list.appendChild(li);
 
     if (p.player_id === state.playerId) {
-      document.getElementById("chkAutoTarget").checked = !!p.auto_target;
+      state.autoTarget = !!p.auto_target;
+      document.getElementById("chkAutoTarget").checked = state.autoTarget;
+      updateAutoButton();
     }
   });
 
@@ -228,7 +235,28 @@ document.getElementById("btnToggleReady").addEventListener("click", () => {
 });
 
 document.getElementById("chkAutoTarget").addEventListener("change", (e) => {
-  state.ws?.send(JSON.stringify({ type: "set_auto", auto: e.target.checked }));
+  setAutoTarget(e.target.checked);
+});
+
+// 위임 전환은 지금 기다리는 질문에도 바로 먹는다. 서버가 대기 중이던 선택을
+// 즉시 풀어 AI에게 넘기므로, 화면에 떠 있는 선택창도 같이 닫아준다.
+function setAutoTarget(auto) {
+  state.autoTarget = !!auto;
+  state.ws?.send(JSON.stringify({ type: "set_auto", auto: state.autoTarget }));
+  document.getElementById("chkAutoTarget").checked = state.autoTarget;
+  if (state.autoTarget) clearTargetPrompt();
+  updateAutoButton();
+}
+
+function updateAutoButton() {
+  const btn = document.getElementById("btnBattleAuto");
+  if (!btn) return;
+  btn.textContent = state.autoTarget ? "🎮 직접 조작하기" : "🤖 이후 AI에게 맡기기";
+  btn.classList.toggle("btn-primary", state.autoTarget);
+}
+
+document.getElementById("btnBattleAuto").addEventListener("click", () => {
+  setAutoTarget(!state.autoTarget);
 });
 
 document.getElementById("btnGoCards").addEventListener("click", async () => {
@@ -547,7 +575,8 @@ const battle = {
   queue: [],
   playing: false,
   fastForward: false,
-  targetContext: null,       // {actor, targets:[{side,pos,...}]} - 내가 대상을 골라야 할 때
+  catchUp: 0,                // 선택 직전, 텀 없이 몰아 재생할 밀린 이벤트 수
+  targetContext: null,       // {mode:"actor"|"target", ...} - 내가 카드를 골라야 할 때
   pendingResult: null,       // 재생이 끝나면 띄울 전투 결과
   playerNames: { A: "A팀", B: "B팀" },
   currentActor: null,        // {side, pos} - 지금 행동하는 카드
@@ -587,6 +616,7 @@ function resetBattleUI() {
   battle.queue = [];
   battle.playing = false;
   battle.fastForward = false;
+  battle.catchUp = 0;
   battle.pendingResult = null;
   battle.currentActor = null;
   clearTargetPrompt();
@@ -594,8 +624,10 @@ function resetBattleUI() {
   document.getElementById("battleLog").innerHTML = "";
   document.getElementById("battleEventText").textContent = "전투 시작!";
   document.getElementById("btnBattleSkip").classList.remove("hidden");
+  document.getElementById("btnBattleAuto").classList.remove("hidden");
   document.getElementById("btnBattleBack").classList.add("hidden");
   updateSkipButton();
+  updateAutoButton();
   pickRandomBattleScene();
   showScreen("battle");
 }
@@ -616,13 +648,30 @@ async function pumpBattleQueue() {
     applyBattleEvent(ev);
     updateSkipButton();
     // turn_start는 "누구 차례"만 알려주는 표시용이라 따로 텀을 두지 않는다
-    if (!battle.fastForward && ev.kind !== "battle_start" && ev.kind !== "turn_start") {
+    let skipDelay = battle.fastForward
+      || ev.kind === "battle_start" || ev.kind === "turn_start";
+    if (battle.catchUp > 0) {
+      battle.catchUp -= 1;
+      skipDelay = true;
+    }
+    if (!skipDelay) {
       await new Promise((resolve) => setTimeout(resolve, EVENT_DELAY_MS));
     }
   }
+  battle.catchUp = 0;
   battle.playing = false;
   updateSkipButton();
   maybeShowBattleResult();
+}
+
+// 선택을 물어보는 순간에는 화면이 "지금 판"을 보여주고 있어야 한다.
+// 그래서 지금 밀려 있는 만큼만 텀 없이 몰아서 재생한다. (개수를 세어두지 않으면
+// 이후에 들어오는 이벤트까지 계속 건너뛰어 전투 전체가 연출 없이 끝나버린다)
+function catchUpBattleQueue() {
+  if (battle.queue.length > 0) {
+    battle.catchUp = battle.queue.length;
+    if (!battle.playing) pumpBattleQueue();
+  }
 }
 
 function cardSlotHtml(side, pos, card) {
@@ -1100,8 +1149,11 @@ function applyBattleEvent(ev) {
   renderDeckColumn("B");
   playEventEffects(ev);
 
-  // 차례 표시는 위쪽 표시줄로 충분해서 로그/문구까지 채우진 않는다
-  if (ev.kind !== "turn_start") {
+  // 차례 표시는 위쪽 표시줄로 충분해서 로그/문구까지 채우진 않는다.
+  // 선택 대기 안내도 전용 안내줄이 따로 있어서 로그까지 채우면 시끄럽기만 하다.
+  if (ev.kind === "waiting_choice") {
+    document.getElementById("battleEventText").textContent = ev.text;
+  } else if (ev.kind !== "turn_start") {
     appendLogLine(ev.text, ev.kind === "round_start" ? "round-line" : "event-line");
     if (ev.kind !== "battle_start") {
       document.getElementById("battleEventText").textContent = ev.text;
@@ -1109,14 +1161,32 @@ function applyBattleEvent(ev) {
   }
 }
 
+// 서버가 물어보는 카드 선택은 두 가지다.
+//   - "actor": 이번 차례에 내보낼 내 장수 (내 덱에서 고름)
+//   - "target": 공격/스킬을 받을 상대 (상대 덱에서 고름)
+// 고르는 덱만 다를 뿐 흐름이 같아서 한 곳에서 처리한다.
+const PICK_MODES = {
+  actor: {
+    listKey: "candidates",
+    message: () => "이번 차례에 행동할 장수를 고르세요",
+    send: "choose_actor",
+  },
+  target: {
+    listKey: "targets",
+    message: (data) => `${data.actor}의 대상을 선택하세요`,
+    send: "choose_target",
+  },
+};
+
 function highlightTargets() {
   const ctx = battle.targetContext;
   if (!ctx) return;
-  ctx.targets.forEach((t) => {
+  const mode = PICK_MODES[ctx.mode];
+  (ctx[mode.listKey] ?? []).forEach((t) => {
     const slot = battleCardEl(t.side, t.pos);
     if (!slot) return;
     slot.classList.add("targetable");
-    slot.onclick = () => chooseTarget(t.pos);
+    slot.onclick = () => sendPick(t.pos);
   });
 }
 
@@ -1127,20 +1197,48 @@ function clearTargetPrompt() {
     el.classList.remove("targetable");
     el.onclick = null;
   });
+  clearActionPrompt();
 }
 
-function chooseTarget(pos) {
-  state.ws?.send(JSON.stringify({ type: "choose_target", pos }));
+function sendPick(pos) {
+  const ctx = battle.targetContext;
+  if (!ctx) return;
+  state.ws?.send(JSON.stringify({ type: PICK_MODES[ctx.mode].send, pos }));
   clearTargetPrompt();
 }
 
-function showTargetPrompt(data) {
-  battle.targetContext = data;
+function showPickPrompt(mode, data) {
+  catchUpBattleQueue();
+  battle.targetContext = { ...data, mode };
   const prompt = document.getElementById("targetPrompt");
-  prompt.textContent = `${data.actor}의 대상을 선택하세요 (${data.timeout_sec}초 안에 고르지 않으면 자동으로 선택됩니다)`;
+  prompt.textContent =
+    `${PICK_MODES[mode].message(data)} (${data.timeout_sec}초 안에 고르지 않으면 자동으로 선택됩니다)`;
   prompt.classList.remove("hidden");
   highlightTargets();
 }
+
+function clearActionPrompt() {
+  document.getElementById("actionPrompt").classList.add("hidden");
+}
+
+function sendAction(action) {
+  state.ws?.send(JSON.stringify({ type: "choose_action", action }));
+  clearActionPrompt();
+}
+
+// MP가 다 찬 장수는 스킬을 쓸지, 아껴두고 일반 공격을 할지 고를 수 있다.
+function showActionPrompt(data) {
+  catchUpBattleQueue();
+  const role = skillRole(data.skill_effect_type);
+  document.getElementById("actionPromptText").innerHTML =
+    `<b>${data.actor?.name ?? ""}</b>의 MP가 가득 찼습니다 — ` +
+    `${role.icon} <b>${data.skill_name ?? ""}</b>: ${data.skill_effect_text ?? ""}`;
+  document.getElementById("btnActionSkill").textContent = `${data.skill_name ?? "스킬"} 사용`;
+  document.getElementById("actionPrompt").classList.remove("hidden");
+}
+
+document.getElementById("btnActionSkill").addEventListener("click", () => sendAction("skill"));
+document.getElementById("btnActionAttack").addEventListener("click", () => sendAction("attack"));
 
 // AI끼리 붙는 전투는 서버가 순식간에 끝내고 battle_result까지 바로 보내버린다.
 // 그때 큐를 강제로 비워버리면 전투 장면이 통째로 날아가므로, 결과는 들고만 있다가
@@ -1162,6 +1260,7 @@ function maybeShowBattleResult() {
   document.getElementById("battleTitle").textContent = `${data.player_a} vs ${data.player_b}`;
   clearTargetPrompt();
   document.getElementById("btnBattleSkip").classList.add("hidden");
+  document.getElementById("btnBattleAuto").classList.add("hidden");
 
   // 일기토로 끝났으면 결과도 일기토 화면에서 보여준다 (그쪽에 시선이 가 있으므로)
   const byDeathmatch = data.decision === "deathmatch";

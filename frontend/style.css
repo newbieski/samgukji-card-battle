@@ -700,6 +700,32 @@ input[type="text"] {
   border: 2px solid var(--accent);
 }
 
+/* MP가 다 찼을 때: 스킬을 쓸지 아껴둘지 고르는 줄 */
+.action-prompt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--text);
+  padding: 8px;
+  margin-bottom: 8px;
+  background: #1a1030;
+  border: 2px solid #ffd166;
+}
+
+.action-prompt-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.btn.btn-small {
+  font-size: 9px;
+  padding: 6px 10px;
+}
+
 /* 지금 누구 차례인지 */
 .turn-indicator {
   text-align: center;
