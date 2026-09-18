@@ -347,6 +347,23 @@ function portraitSrc(name) {
   return `assets/portraits/${encodeURIComponent(name)}.png`;
 }
 
+// 스킬 효과 종류로 장수의 역할을 정한다. 아이콘은 전투 로그/배너/카드에서 공통으로 쓴다.
+const SKILL_ROLES = {
+  damage:     { icon: "⚔️", label: "공격형" },
+  heal:       { icon: "✚",  label: "회복형" },
+  buff:       { icon: "🛡️", label: "지원형" },
+  debuff:     { icon: "🔻", label: "방해형" },
+  extra_turn: { icon: "⚡", label: "속공형" },
+  stun:       { icon: "💫", label: "제압형" },
+  swap:       { icon: "🔄", label: "교란형" },
+  mp_drain:   { icon: "🌀", label: "탈취형" },
+  plague:     { icon: "☠️", label: "역병형" },
+};
+
+function skillRole(effectType) {
+  return SKILL_ROLES[effectType] ?? { icon: "✦", label: "특수형" };
+}
+
 function rarityBadgesHtml(rarity) {
   const style = `color: var(--rarity-${rarity}); border-color: var(--rarity-${rarity});`;
   return `
@@ -364,8 +381,12 @@ function renderDrawResult(result) {
     <img class="card-portrait" src="${portraitSrc(result.general_name)}" alt="${result.general_name}"
          onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
     <div class="card-name">${result.general_name}</div>
-    <div class="card-rarity">${result.faction} · ${result.rarity}</div>
-    <div class="card-skill"><strong>${result.skill_name}</strong><br>${result.skill_description}</div>
+    <div class="card-rarity">${result.faction} · ${result.rarity} · ${skillRole(result.skill_effect_type).icon} ${skillRole(result.skill_effect_type).label}</div>
+    <div class="card-skill">
+      <strong>${skillRole(result.skill_effect_type).icon} ${result.skill_name}</strong><br>
+      <span class="skill-effect">${result.skill_effect_text ?? ""}</span><br>
+      ${result.skill_description}
+    </div>
     <div class="card-stats">
       <span>HP ${result.stats.hp}</span><span>MP ${result.stats.mp}</span>
       <span>공격 ${result.stats.atk}</span><span>지력 ${result.stats.int}</span>
@@ -404,8 +425,9 @@ function renderCardGrid() {
       <img class="tile-portrait" src="${portraitSrc(card.name)}" alt="${card.name}"
            onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
       <div class="name">${card.name}</div>
-      <div>${card.faction} · ${card.rarity}</div>
-      <div>${card.skill_name}</div>
+      <div>${card.faction} · <span class="tile-role">${skillRole(card.skill_effect_type).icon} ${skillRole(card.skill_effect_type).label}</span></div>
+      <div class="tile-skill">${skillRole(card.skill_effect_type).icon} ${card.skill_name}</div>
+      <div class="skill-effect">${card.skill_effect_text ?? ""}</div>
       <div>HP${card.hp} / MP${card.mp} / ATK${card.atk}</div>
       <div>강화 +${card.enhance_level}</div>
     `;
@@ -550,6 +572,8 @@ function cardSlotHtml(side, pos, card) {
   ].join("");
   const acting = !dead && battle.currentActor
     && battle.currentActor.side === side && battle.currentActor.pos === pos;
+  const role = skillRole(card.skill_effect_type);
+  const skillReady = !dead && card.max_mp && card.mp >= card.max_mp;
   return `
     <div class="battle-card rarity-${card.rarity}${dead ? " dead" : ""}${acting ? " acting" : ""}" data-side="${side}" data-pos="${pos}">
       <div class="battle-card-body">
@@ -557,6 +581,10 @@ function cardSlotHtml(side, pos, card) {
         <img class="battle-card-portrait" src="${portraitSrc(card.name)}" alt=""
              onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
         <div class="battle-card-name">${card.name}<span class="battle-card-badges">${badges}</span></div>
+        <div class="battle-card-skill${skillReady ? " ready" : ""}"
+             title="${role.label} · ${card.skill_effect_text ?? ""}">
+          <span class="role-icon">${role.icon}</span>${card.skill_name ?? ""}
+        </div>
         <div class="hp-bar-track small"><div class="hp-bar-fill${hpPct <= 30 ? " low" : ""}" style="width:${hpPct}%"></div></div>
         <div class="mp-bar-track small"><div class="mp-bar-fill${mpPct >= 100 ? " full" : ""}" style="width:${mpPct}%"></div></div>
       </div>
@@ -649,9 +677,12 @@ function lungeToward(side, pos) {
 
 let skillBannerTimer = null;
 
-function showSkillBanner(actorName, skillName) {
+function showSkillBanner(actorName, skillName, effectType, effectText) {
   const banner = document.getElementById("skillBanner");
-  banner.textContent = `⚡ ${actorName}의 「${skillName}」 발동!`;
+  const role = skillRole(effectType);
+  banner.innerHTML =
+    `<span class="banner-skill">${role.icon} ${actorName}의 「${skillName}」</span>` +
+    (effectText ? `<span class="banner-effect">${role.label} · ${effectText}</span>` : "");
   banner.classList.remove("show");
   void banner.offsetWidth;
   banner.classList.add("show");
@@ -740,7 +771,7 @@ function playEventEffects(ev) {
       break;
 
     case "skill_cast":
-      showSkillBanner(ev.actor, ev.skill_name);
+      showSkillBanner(ev.actor, ev.skill_name, ev.skill_effect_type, ev.skill_effect_text);
       flareStage();
       flashSlot(ev.actor_side, ev.actor_pos, "buff");
       break;

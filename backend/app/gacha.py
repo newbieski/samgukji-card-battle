@@ -29,7 +29,8 @@ def draw_rarity() -> str:
 def draw_general_card(conn: sqlite3.Connection, rarity: str) -> sqlite3.Row:
     cur = conn.cursor()
     cur.execute(
-        "SELECT gc.*, g.name, g.faction, g.skill_name, g.skill_description "
+        "SELECT gc.*, g.name, g.faction, g.skill_name, g.skill_description, "
+        "g.skill_effect_type, g.skill_scope, g.skill_stat "
         "FROM general_cards gc "
         "JOIN generals g ON g.id = gc.general_id "
         "WHERE gc.rarity = ?",

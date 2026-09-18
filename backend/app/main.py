@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from db import get_connection, init_db
 from gacha import GACHA_COST, perform_draw
-from battle import build_battle_card, card_snapshot, run_team_battle
+from battle import build_battle_card, card_snapshot, run_team_battle, skill_summary
 from rooms import manager as room_manager, RoomPlayer, Room, MAX_PLAYERS_PER_ROOM
 
 TARGET_TIMEOUT_SEC = 20
@@ -165,6 +165,11 @@ def gacha_draw(player_id: int):
         "rarity": card["rarity"],
         "skill_name": card["skill_name"],
         "skill_description": card["skill_description"],
+        "skill_effect_type": card["skill_effect_type"],
+        "skill_effect_text": skill_summary(
+            card["skill_effect_type"], card["skill_scope"],
+            card["skill_stat"], card["skill_potency"],
+        ),
         "stats": {
             "hp": card["hp"],
             "mp": card["mp"],
@@ -184,7 +189,9 @@ def get_player_cards(player_id: int):
     conn = get_connection()
     rows = conn.execute(
         "SELECT pc.id AS player_card_id, pc.enhance_level, pc.obtained_at, "
-        "g.name, g.faction, g.skill_name, gc.rarity, gc.hp, gc.mp, gc.atk "
+        "g.name, g.faction, g.skill_name, g.skill_description, "
+        "g.skill_effect_type, g.skill_scope, g.skill_stat, "
+        "gc.rarity, gc.hp, gc.mp, gc.atk, gc.skill_potency "
         "FROM player_cards pc "
         "JOIN general_cards gc ON gc.id = pc.general_card_id "
         "JOIN generals g ON g.id = gc.general_id "
@@ -193,7 +200,15 @@ def get_player_cards(player_id: int):
         (player_id,),
     ).fetchall()
     conn.close()
-    return [dict(row) for row in rows]
+    cards = []
+    for row in rows:
+        card = dict(row)
+        card["skill_effect_text"] = skill_summary(
+            card["skill_effect_type"], card["skill_scope"],
+            card["skill_stat"], card["skill_potency"],
+        )
+        cards.append(card)
+    return cards
 
 
 class BattleRequest(BaseModel):

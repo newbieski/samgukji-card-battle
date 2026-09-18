@@ -108,6 +108,37 @@ def _calc_damage(effective_atk: float, effective_def: float) -> int:
     return max(1, round(effective_atk - effective_def * DEF_DAMAGE_FACTOR))
 
 
+def skill_summary(effect_type: str, scope: str, stat: str | None, potency: int) -> str:
+    """스킬이 무슨 일을 하는지 한 줄로 요약한다 (배너/카드 표시용)."""
+    target = {
+        "enemy": "적 하나",
+        "enemy_team": "적 전체",
+        "self": "자신",
+        "team": "아군 전체",
+    }.get(scope, scope)
+    stat_label = {"atk": "공격력", "def": "방어력", "acc": "명중률", "hp": "HP", "mp": "MP"}.get(stat, "")
+
+    if effect_type == "damage":
+        return f"{target}에게 피해 +{potency}%"
+    if effect_type == "heal":
+        return f"{target} {stat_label or 'HP'} {potency}% 회복"
+    if effect_type == "buff":
+        return f"{target} {stat_label or '능력치'} {potency}% 상승"
+    if effect_type == "debuff":
+        return f"{target} {stat_label or '능력치'} {potency}% 하락"
+    if effect_type == "extra_turn":
+        return "곧바로 한 번 더 행동"
+    if effect_type == "stun":
+        return f"{target} {_stun_duration(potency)}턴 무력화"
+    if effect_type == "swap":
+        return f"{target}와 진영 위치 교체"
+    if effect_type == "mp_drain":
+        return f"{target} MP {potency}% 흡수"
+    if effect_type == "plague":
+        return f"{target} 감염 - 매 라운드 피해, 옆으로 전염"
+    return effect_type
+
+
 def card_snapshot(card: BattleCard) -> dict:
     return {
         "name": card.name,
@@ -118,6 +149,10 @@ def card_snapshot(card: BattleCard) -> dict:
         "max_mp": card.max_mp,
         "atk": card.atk,
         "skill_name": card.skill_name,
+        "skill_effect_type": card.skill_effect_type,
+        "skill_effect_text": skill_summary(
+            card.skill_effect_type, card.skill_scope, card.skill_stat, card.skill_potency
+        ),
         "stunned": card.stun_turns > 0,
         "infected": card.plague_turns > 0,
     }
@@ -216,10 +251,14 @@ async def _use_skill(side: str, attacker: BattleCard, decks: dict, sides: dict, 
     own_side, enemy_side_state = sides[side], sides[enemy_side]
     actor_pos = decks[side].index(attacker)
 
+    effect_text = skill_summary(effect, scope, stat, attacker.skill_potency)
     await emit({
         "kind": "skill_cast",
-        "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name, "skill_name": attacker.skill_name,
-        "text": f"{attacker.name}의 '{attacker.skill_name}'!",
+        "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+        "skill_name": attacker.skill_name,
+        "skill_effect_type": effect,
+        "skill_effect_text": effect_text,
+        "text": f"{attacker.name}의 '{attacker.skill_name}' - {effect_text}",
     })
 
     if effect == "damage":

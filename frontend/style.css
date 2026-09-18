@@ -605,6 +605,44 @@ input[type="text"] {
   margin-left: 4px;
 }
 
+/* 카드가 가진 스킬. MP가 다 차서 바로 쓸 수 있으면 금색으로 살아난다 */
+.battle-card-skill {
+  font-size: 8px;
+  color: #8a7bc4;
+  margin-bottom: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.battle-card-skill .role-icon {
+  margin-right: 3px;
+}
+
+@keyframes skill-ready-pulse {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
+}
+
+.battle-card-skill.ready {
+  color: var(--accent);
+  text-shadow: 0 0 6px rgba(255, 203, 71, 0.8);
+  animation: skill-ready-pulse 1s ease-in-out infinite;
+}
+
+/* 덱/뽑기 카드의 역할·효과 표기 */
+.tile-role {
+  color: var(--accent);
+}
+
+.tile-skill {
+  color: #cfc4ff;
+}
+
+.skill-effect {
+  color: #8fd6ff;
+}
+
 .hp-bar-track.small,
 .mp-bar-track.small {
   height: 8px;
@@ -1003,6 +1041,17 @@ input[type="text"] {
 .skill-banner.show {
   opacity: 1;
   transform: translate(-50%, -50%) scale(1);
+}
+
+.skill-banner .banner-skill {
+  display: block;
+}
+
+.skill-banner .banner-effect {
+  display: block;
+  margin-top: 6px;
+  font-size: 10px;
+  color: #fff6d8;
 }
 
 .battle-controls {
