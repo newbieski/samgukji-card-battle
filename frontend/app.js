@@ -462,6 +462,7 @@ const battle = {
   playing: false,
   fastForward: false,
   targetContext: null,       // {actor, targets:[{side,pos,...}]} - 내가 대상을 골라야 할 때
+  pendingResult: null,       // 재생이 끝나면 띄울 전투 결과
 };
 
 function getBattleCard(side, pos) {
@@ -498,6 +499,7 @@ function resetBattleUI() {
   battle.queue = [];
   battle.playing = false;
   battle.fastForward = false;
+  battle.pendingResult = null;
   clearTargetPrompt();
   document.getElementById("battleLog").innerHTML = "";
   document.getElementById("battleEventText").textContent = "전투 시작!";
@@ -528,6 +530,8 @@ async function pumpBattleQueue() {
     }
   }
   battle.playing = false;
+  updateSkipButton();
+  maybeShowBattleResult();
 }
 
 function cardSlotHtml(side, pos, card) {
@@ -541,12 +545,14 @@ function cardSlotHtml(side, pos, card) {
   ].join("");
   return `
     <div class="battle-card rarity-${card.rarity}${dead ? " dead" : ""}" data-side="${side}" data-pos="${pos}">
-      ${rarityBadgesHtml(card.rarity)}
-      <img class="battle-card-portrait" src="${portraitSrc(card.name)}" alt=""
-           onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
-      <div class="battle-card-name">${card.name}<span class="battle-card-badges">${badges}</span></div>
-      <div class="hp-bar-track small"><div class="hp-bar-fill${hpPct <= 30 ? " low" : ""}" style="width:${hpPct}%"></div></div>
-      <div class="mp-bar-track small"><div class="mp-bar-fill${mpPct >= 100 ? " full" : ""}" style="width:${mpPct}%"></div></div>
+      <div class="battle-card-body">
+        ${rarityBadgesHtml(card.rarity)}
+        <img class="battle-card-portrait" src="${portraitSrc(card.name)}" alt=""
+             onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
+        <div class="battle-card-name">${card.name}<span class="battle-card-badges">${badges}</span></div>
+        <div class="hp-bar-track small"><div class="hp-bar-fill${hpPct <= 30 ? " low" : ""}" style="width:${hpPct}%"></div></div>
+        <div class="mp-bar-track small"><div class="mp-bar-fill${mpPct >= 100 ? " full" : ""}" style="width:${mpPct}%"></div></div>
+      </div>
     </div>`;
 }
 
@@ -557,8 +563,8 @@ function renderDeckColumn(side) {
 }
 
 const FLASH_CLASSES = [
-  "flash-hit", "flash-skill-hit", "flash-heal", "flash-buff",
-  "flash-debuff", "flash-miss", "flash-lunge", "flash-faint",
+  "flash-hit", "flash-skill-hit", "flash-heal", "flash-buff", "flash-debuff",
+  "flash-miss", "flash-lunge-down", "flash-lunge-up", "flash-faint", "flash-swap",
 ];
 
 function battleCardEl(side, pos) {
@@ -599,6 +605,39 @@ function flareStage() {
   flare.className = "stage-flare";
   stage.appendChild(flare);
   flare.addEventListener("animationend", () => flare.remove());
+}
+
+function shakeStage() {
+  const stage = document.querySelector(".battle-stage");
+  if (!stage) return;
+  stage.classList.remove("shake");
+  void stage.offsetWidth;
+  stage.classList.add("shake");
+}
+
+/** 카드 위에 스킬 효과 종류별 오버레이를 한 번 덮어씌운다. */
+function spawnFx(side, pos, fxClass, text) {
+  const el = battleCardEl(side, pos);
+  if (!el) return;
+  const fx = document.createElement("div");
+  fx.className = `fx-overlay ${fxClass}`;
+  if (text) fx.textContent = text;
+  el.appendChild(fx);
+  fx.addEventListener("animationend", () => fx.remove());
+}
+
+function spawnSlash(side, pos) {
+  const el = battleCardEl(side, pos);
+  if (!el) return;
+  const slash = document.createElement("div");
+  slash.className = "fx-slash";
+  el.appendChild(slash);
+  slash.addEventListener("animationend", () => slash.remove());
+}
+
+/** 공격 측은 상대 줄을 향해 돌진한다 (A는 윗줄이라 아래로, B는 아랫줄이라 위로). */
+function lungeToward(side, pos) {
+  flashSlot(side, pos, side === "A" ? "lunge-down" : "lunge-up");
 }
 
 let skillBannerTimer = null;
@@ -673,72 +712,105 @@ function applyEventToState(ev) {
 }
 
 function playEventEffects(ev) {
+  const enemyOf = (side) => (side === "A" ? "B" : "A");
+
   switch (ev.kind) {
     case "attack":
-      flashSlot(ev.actor_side, ev.actor_pos, "lunge");
+      lungeToward(ev.actor_side, ev.actor_pos);
       flashSlot(ev.target_side, ev.target_pos, "hit");
+      spawnSlash(ev.target_side, ev.target_pos);
       spawnSpark(ev.target_side, ev.target_pos, false);
       spawnPopup(ev.target_side, ev.target_pos, `-${ev.amount}`, "damage");
+      shakeStage();
       break;
+
     case "skill_damage":
       flashSlot(ev.target_side, ev.target_pos, "skill-hit");
+      spawnSlash(ev.target_side, ev.target_pos);
       spawnSpark(ev.target_side, ev.target_pos, true);
       spawnPopup(ev.target_side, ev.target_pos, `-${ev.amount}`, "damage");
+      shakeStage();
       break;
+
     case "skill_cast":
       showSkillBanner(ev.actor, ev.skill_name);
       flareStage();
       flashSlot(ev.actor_side, ev.actor_pos, "buff");
       break;
+
     case "miss":
-      flashSlot(ev.actor_side, ev.actor_pos, "lunge");
+      lungeToward(ev.actor_side, ev.actor_pos);
       flashSlot(ev.target_side, ev.target_pos, "miss");
       spawnPopup(ev.target_side, ev.target_pos, "MISS", "miss");
       break;
+
     case "skill_heal":
-      flashSlot(ev.target_side, ev.target_pos, "heal");
+      spawnFx(ev.target_side, ev.target_pos, "fx-heal");
       spawnPopup(ev.target_side, ev.target_pos, `+${ev.amount}`, "heal");
       break;
+
     case "skill_heal_mp":
-      flashSlot(ev.target_side, ev.target_pos, "heal");
+      spawnFx(ev.target_side, ev.target_pos, "fx-heal");
       spawnPopup(ev.target_side, ev.target_pos, `MP +${ev.amount}`, "mp");
       break;
+
     case "skill_buff":
-    case "extra_turn":
-      flashSlot(ev.actor_side, ev.actor_pos, "buff");
-      break;
-    case "skill_debuff":
       if (ev.team_wide) {
-        const enemySide = ev.actor_side === "A" ? "B" : "A";
-        (battle.decks[enemySide] || []).forEach((_, i) => flashSlot(enemySide, i, "debuff"));
+        (battle.decks[ev.actor_side] || []).forEach((c, i) => {
+          if (c && c.hp > 0) spawnFx(ev.actor_side, i, "fx-buff");
+        });
       } else {
-        flashSlot(ev.target_side, ev.target_pos, "debuff");
+        spawnFx(ev.actor_side, ev.actor_pos, "fx-buff");
       }
       break;
-    case "stun":
-      flashSlot(ev.target_side, ev.target_pos, "debuff");
-      spawnPopup(ev.target_side, ev.target_pos, `💫 ${ev.duration}턴`, "debuff");
+
+    case "extra_turn":
+      spawnFx(ev.actor_side, ev.actor_pos, "fx-extra");
+      spawnPopup(ev.actor_side, ev.actor_pos, "⚡ 한 번 더", "heal");
       break;
+
+    case "skill_debuff":
+      if (ev.team_wide) {
+        const enemySide = enemyOf(ev.actor_side);
+        (battle.decks[enemySide] || []).forEach((c, i) => {
+          if (c && c.hp > 0) spawnFx(enemySide, i, "fx-debuff");
+        });
+      } else {
+        spawnFx(ev.target_side, ev.target_pos, "fx-debuff");
+      }
+      break;
+
+    case "stun":
+      spawnFx(ev.target_side, ev.target_pos, "fx-stun", "💫");
+      spawnPopup(ev.target_side, ev.target_pos, `${ev.duration}턴 무력화`, "debuff");
+      break;
+
     case "mp_drain":
-      flashSlot(ev.target_side, ev.target_pos, "debuff");
+      spawnFx(ev.target_side, ev.target_pos, "fx-drain");
       spawnPopup(ev.target_side, ev.target_pos, `MP -${ev.amount}`, "mp");
       break;
+
     case "swap":
-      flashSlot(ev.actor_side, ev.actor_pos, "buff");
-      flashSlot(ev.target_side, ev.target_pos, "buff");
+      flashSlot(ev.actor_side, ev.actor_pos, "swap");
+      flashSlot(ev.target_side, ev.target_pos, "swap");
+      flareStage();
       break;
+
     case "plague_infect":
-      flashSlot(ev.target_side, ev.target_pos, "debuff");
+      spawnFx(ev.target_side, ev.target_pos, "fx-plague");
       spawnPopup(ev.target_side, ev.target_pos, "☠️ 역병", "debuff");
       break;
+
     case "plague_tick":
-      flashSlot(ev.side, ev.pos, "hit");
+      spawnFx(ev.side, ev.pos, "fx-plague");
       spawnPopup(ev.side, ev.pos, `-${ev.amount}`, "damage");
       break;
+
     case "plague_spread":
-      flashSlot(ev.side, ev.to_pos, "debuff");
+      spawnFx(ev.side, ev.to_pos, "fx-plague");
       spawnPopup(ev.side, ev.to_pos, "☠️ 전염", "debuff");
       break;
+
     case "faint":
       flashSlot(ev.side, ev.pos, "faint");
       break;
@@ -801,14 +873,18 @@ function showTargetPrompt(data) {
   highlightTargets();
 }
 
+// AI끼리 붙는 전투는 서버가 순식간에 끝내고 battle_result까지 바로 보내버린다.
+// 그때 큐를 강제로 비워버리면 전투 장면이 통째로 날아가므로, 결과는 들고만 있다가
+// 재생이 다 끝난 뒤에 띄운다.
 function onBattleResult(data) {
-  // battle_result는 마지막 battle_event 이후에 도착하지만, 이 시점에 아직 큐에 남아
-  // 재생 대기 중인 이벤트가 있을 수 있다. 승자 배너가 나중에 덮어써지지 않도록
-  // 남은 이벤트를 지연 없이 즉시 다 반영해버린 뒤에 배너를 띄운다.
-  battle.fastForward = true;
-  while (battle.queue.length > 0) {
-    applyBattleEvent(battle.queue.shift());
-  }
+  battle.pendingResult = data;
+  maybeShowBattleResult();
+}
+
+function maybeShowBattleResult() {
+  const data = battle.pendingResult;
+  if (!data || battle.playing || battle.queue.length > 0) return;
+  battle.pendingResult = null;
 
   document.getElementById("battleTitle").textContent = `${data.player_a} vs ${data.player_b}`;
   clearTargetPrompt();

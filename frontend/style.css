@@ -354,10 +354,10 @@ input[type="text"] {
 .battle-card.rarity-A { border-color: var(--rarity-A); }
 .battle-card.rarity-S { border-color: var(--rarity-S); box-shadow: 0 0 14px var(--rarity-S); }
 
-/* C 이상 등급은 카드 위로 빛이 한 번씩 훑고 지나가는 반짝임 효과 */
+/* C 이상 등급은 카드 위로 빛이 한 번씩 훑고 지나가는 반짝임 효과.
+   전투 화면(.battle-card)에는 일부러 넣지 않는다 - 전투 연출과 겹쳐서 어지럽다. */
 .card.rarity-C::after, .card.rarity-B::after, .card.rarity-A::after, .card.rarity-S::after,
-.card-tile.rarity-C::after, .card-tile.rarity-B::after, .card-tile.rarity-A::after, .card-tile.rarity-S::after,
-.battle-card.rarity-C::after, .battle-card.rarity-B::after, .battle-card.rarity-A::after, .battle-card.rarity-S::after {
+.card-tile.rarity-C::after, .card-tile.rarity-B::after, .card-tile.rarity-A::after, .card-tile.rarity-S::after {
   content: "";
   position: absolute;
   top: -20%;
@@ -370,9 +370,9 @@ input[type="text"] {
   pointer-events: none;
 }
 
-.card.rarity-B::after, .card-tile.rarity-B::after, .battle-card.rarity-B::after { animation-duration: 2.6s; }
-.card.rarity-A::after, .card-tile.rarity-A::after, .battle-card.rarity-A::after { animation-duration: 2s; }
-.card.rarity-S::after, .card-tile.rarity-S::after, .battle-card.rarity-S::after { animation-duration: 1.5s; }
+.card.rarity-B::after, .card-tile.rarity-B::after { animation-duration: 2.6s; }
+.card.rarity-A::after, .card-tile.rarity-A::after { animation-duration: 2s; }
+.card.rarity-S::after, .card-tile.rarity-S::after { animation-duration: 1.5s; }
 
 @keyframes shimmer-sweep {
   0%, 20% { transform: translateX(-160%) rotate(20deg); }
@@ -565,11 +565,16 @@ input[type="text"] {
   visibility: hidden;
 }
 
+/* 회색 처리는 카드 내용(.battle-card-body)에만 건다. 연출 요소는 카드 바로 아래에
+   붙기 때문에, 이렇게 해야 마지막 일격의 타격 연출이 같이 흐려지지 않는다. */
 .battle-card.dead {
-  opacity: 0.35;
-  filter: grayscale(1);
   animation: none;
   box-shadow: none;
+}
+
+.battle-card.dead .battle-card-body {
+  opacity: 0.35;
+  filter: grayscale(1);
 }
 
 /* 쓰러진 카드는 등급 반짝임도 멈춘다 */
@@ -669,10 +674,12 @@ input[type="text"] {
 }
 
 @keyframes flash-hit {
-  0% { background-color: #8b2030; transform: translateX(-5px); }
-  25% { transform: translateX(5px); }
-  50% { transform: translateX(-3px); }
-  100% { background-color: rgba(20, 12, 41, 0.9); transform: translateX(0); }
+  0% { background-color: #b32a3e; transform: translateX(-10px) rotate(-3deg); }
+  20% { transform: translateX(10px) rotate(3deg); }
+  40% { transform: translateX(-7px) rotate(-2deg); }
+  60% { transform: translateX(7px) rotate(2deg); }
+  80% { transform: translateX(-3px) rotate(-1deg); }
+  100% { background-color: rgba(20, 12, 41, 0.9); transform: translateX(0) rotate(0deg); }
 }
 
 @keyframes flash-skill-hit {
@@ -701,11 +708,19 @@ input[type="text"] {
   100% { background-color: rgba(20, 12, 41, 0.9); opacity: 1; }
 }
 
-/* 공격하는 카드가 앞으로 내지르는 모션 */
-@keyframes lunge-punch {
-  0% { transform: scale(1) translateY(0); }
-  35% { transform: scale(1.1) translateY(-8px); }
-  100% { transform: scale(1) translateY(0); }
+/* 공격하는 카드가 상대 줄 쪽으로 돌진했다 돌아오는 모션 (A는 아래, B는 위로) */
+@keyframes lunge-down {
+  0% { transform: translateY(0) scale(1); }
+  30% { transform: translateY(30px) scale(1.12); }
+  45% { transform: translateY(24px) scale(1.08); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+@keyframes lunge-up {
+  0% { transform: translateY(0) scale(1); }
+  30% { transform: translateY(-30px) scale(1.12); }
+  45% { transform: translateY(-24px) scale(1.08); }
+  100% { transform: translateY(0) scale(1); }
 }
 
 /* 쓰러질 때 한 번만 재생되는 연출 (죽은 상태 자체는 .dead 가 담당) */
@@ -720,8 +735,154 @@ input[type="text"] {
 .battle-card.flash-buff { animation: flash-buff 0.4s ease-out; }
 .battle-card.flash-debuff { animation: flash-debuff 0.4s ease-out; }
 .battle-card.flash-miss { animation: flash-miss 0.4s ease-out; }
-.battle-card.flash-lunge { animation: lunge-punch 0.35s ease-out; }
+.battle-card.flash-lunge-down { animation: lunge-down 0.4s ease-out; z-index: 5; }
+.battle-card.flash-lunge-up { animation: lunge-up 0.4s ease-out; z-index: 5; }
 .battle-card.flash-faint { animation: faint-collapse 0.5s ease-out forwards; }
+
+/* 위치 교체: 두 카드가 서로 스치며 지나가는 느낌 */
+@keyframes swap-slide {
+  0% { transform: translateX(0) scale(1); }
+  35% { transform: translateX(55%) scale(0.85); opacity: 0.35; }
+  65% { transform: translateX(-55%) scale(0.85); opacity: 0.35; }
+  100% { transform: translateX(0) scale(1); opacity: 1; }
+}
+
+.battle-card.flash-swap { animation: swap-slide 0.7s ease-in-out; z-index: 6; }
+
+/* 타격 순간 전장이 흔들림 */
+@keyframes stage-shake {
+  0%, 100% { transform: translate(0, 0); }
+  20% { transform: translate(-6px, 4px); }
+  40% { transform: translate(6px, -4px); }
+  60% { transform: translate(-4px, -2px); }
+  80% { transform: translate(4px, 2px); }
+}
+
+.battle-stage.shake { animation: stage-shake 0.3s ease-out; }
+
+/* 베는 궤적 */
+@keyframes slash-sweep {
+  0% { transform: translate(-50%, -50%) rotate(-35deg) scaleX(0.1); opacity: 0; }
+  30% { opacity: 1; }
+  100% { transform: translate(-50%, -50%) rotate(-35deg) scaleX(1.7); opacity: 0; }
+}
+
+.fx-slash {
+  position: absolute;
+  top: 45%;
+  left: 50%;
+  width: 170%;
+  height: 7px;
+  background: linear-gradient(90deg, transparent, #ffffff 35%, #ffe9a8 55%, transparent);
+  box-shadow: 0 0 12px #fff6c9;
+  z-index: 4;
+  pointer-events: none;
+  animation: slash-sweep 0.32s ease-out forwards;
+}
+
+/* ── 스킬 효과 종류별 연출 ── */
+
+.fx-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+/* 회복: 초록 기운이 아래에서 위로 차오름 */
+@keyframes fx-heal-rise {
+  0% { opacity: 0; transform: translateY(35%); }
+  30% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-35%); }
+}
+
+.fx-heal {
+  background: linear-gradient(0deg, rgba(79, 209, 139, 0.95), rgba(79, 209, 139, 0.2) 55%, transparent);
+  animation: fx-heal-rise 0.7s ease-out forwards;
+}
+
+/* 버프: 카드에서 퍼져나가는 링 */
+@keyframes fx-ring-expand {
+  0% { transform: scale(0.35); opacity: 0.95; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+
+.fx-buff {
+  inset: 18%;
+  border: 4px solid #4fa8ff;
+  border-radius: 50%;
+  box-shadow: 0 0 20px #4fa8ff;
+  animation: fx-ring-expand 0.6s ease-out forwards;
+}
+
+/* 디버프: 보라 기운이 위에서 내려앉음 */
+@keyframes fx-debuff-fall {
+  0% { opacity: 0; transform: translateY(-35%); }
+  30% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(35%); }
+}
+
+.fx-debuff {
+  background: linear-gradient(180deg, rgba(181, 107, 255, 0.95), rgba(181, 107, 255, 0.2) 60%, transparent);
+  animation: fx-debuff-fall 0.65s ease-out forwards;
+}
+
+/* 추가 행동: 금색으로 두 번 번쩍 */
+@keyframes fx-extra-pulse {
+  0%, 100% { opacity: 0; transform: scale(1); }
+  20% { opacity: 1; transform: scale(1.12); }
+  45% { opacity: 0.3; transform: scale(1); }
+  70% { opacity: 1; transform: scale(1.12); }
+}
+
+.fx-extra {
+  border: 4px solid var(--accent);
+  box-shadow: 0 0 22px var(--accent), inset 0 0 22px rgba(255, 203, 71, 0.65);
+  animation: fx-extra-pulse 0.85s ease-out forwards;
+}
+
+/* 무력화: 별이 머리 위에서 빙글 */
+@keyframes fx-stun-spin {
+  0% { opacity: 0; transform: rotate(0deg) scale(0.6); }
+  25% { opacity: 1; transform: rotate(120deg) scale(1.1); }
+  100% { opacity: 0; transform: rotate(540deg) scale(1); }
+}
+
+.fx-stun {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 6%;
+  font-size: 22px;
+  animation: fx-stun-spin 0.9s linear forwards;
+}
+
+/* MP 흡수: 청색 기운이 안쪽으로 빨려들어감 */
+@keyframes fx-drain-suck {
+  0% { transform: scale(1.7); opacity: 0; }
+  30% { opacity: 1; }
+  100% { transform: scale(0.15); opacity: 0; }
+}
+
+.fx-drain {
+  inset: 8%;
+  border: 3px solid #4fa8ff;
+  border-radius: 50%;
+  box-shadow: 0 0 18px #4fa8ff, inset 0 0 18px rgba(79, 168, 255, 0.6);
+  animation: fx-drain-suck 0.6s ease-in forwards;
+}
+
+/* 역병: 병색 짙은 초록 기운이 번짐 */
+@keyframes fx-plague-bloom {
+  0% { opacity: 0; transform: scale(0.55); }
+  40% { opacity: 0.95; transform: scale(1.05); }
+  100% { opacity: 0; transform: scale(1.25); }
+}
+
+.fx-plague {
+  background: radial-gradient(circle at 50% 65%, rgba(124, 214, 90, 0.9), rgba(60, 140, 40, 0.45) 45%, transparent 72%);
+  animation: fx-plague-bloom 0.8s ease-out forwards;
+}
 
 /* 타격 순간 터지는 스파크 */
 @keyframes hit-spark-burst {
