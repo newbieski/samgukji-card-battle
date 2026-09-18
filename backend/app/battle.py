@@ -3,8 +3,9 @@
 
 규칙 요약 (기획 확정 사항):
 - 덱은 5장. 양쪽 덱 전체가 전장에 동시에 나와 있다 (죽을 때까지 계속 참여).
-- 라운드마다: 그 순간 살아있는 카드를 전부 모아 무력(war_stat) 내림차순으로 행동 순서를
-  정하고, 그 순서대로 한 카드씩 딱 한 번의 행동(기본 공격 또는 스킬)을 한다.
+- 라운드마다 각 카드가 한 번씩 행동한다. 순서는 양 진영이 한 명씩 번갈아 가는 것이
+  원칙이며(진영 안에서는 무력이 높은 카드부터), 상대 진영에 아직 행동할 카드가 남아
+  있지 않을 때만 같은 진영이 이어서 움직인다. 스킬로 얻는 추가 행동이 유일한 예외다.
 - 기본 공격/단일 대상 스킬은 대상을 골라야 한다. 실제 사람 대상이면 choose_target
   콜백이 호출되고(웹소켓으로 물어봄), AI 위임 상태면 그 콜백 내부에서 알아서 고른다 -
   이 파일은 "누가 사람이고 누가 AI인지"를 모른다.
@@ -32,6 +33,9 @@ ENHANCE_STEP = 0.05          # 강화 1레벨당 스탯 +5%
 MP_FILL_ATTACKS = 3          # 기본 공격 약 3회면 MP가 가득 참
 BASE_HIT_CHANCE = 0.95
 DEF_DAMAGE_FACTOR = 0.35     # 피해 = atk - def * DEF_DAMAGE_FACTOR
+DAMAGE_MIN_RATIO = 0.12      # 최소 피해 = 공격력의 12% (약한 장수도 1씩만 긁지 않도록)
+DAMAGE_CAP_RATIO = 0.42      # 기본 공격 한 방은 대상 최대 체력의 42%를 넘지 못한다
+SKILL_DAMAGE_CAP_RATIO = 0.62  # 스킬은 조금 더 크게 들어간다
 ENEMY_TEAM_DAMAGE_BONUS = 1.2  # '전체 공격' 스킬은 단일 대상보다 더 강하게 처리
 MAX_ROUNDS = 30
 
@@ -108,8 +112,21 @@ def build_battle_card(row, enhance_level: int = 0) -> BattleCard:
     )
 
 
-def _calc_damage(effective_atk: float, effective_def: float) -> int:
-    return max(1, round(effective_atk - effective_def * DEF_DAMAGE_FACTOR))
+def _calc_damage(effective_atk: float, effective_def: float, target_max_hp: int = 0,
+                  cap_ratio: float = DAMAGE_CAP_RATIO) -> int:
+    """피해 = 공격력 - 방어력 x 계수. 단 아래 두 가지로 양 극단을 막는다.
+
+    - 하한: 공격력의 DAMAGE_MIN_RATIO 만큼은 반드시 들어간다. 약한 장수가
+      단단한 상대 앞에서 1의 피해만 주며 무의미해지지 않도록.
+    - 상한: 대상 최대 체력의 cap_ratio 를 넘지 못한다. 상위 등급이 하위 등급을
+      한 방에 지우지 못하게 해서 낮은 등급도 몇 합은 버티고 기여할 수 있도록.
+    """
+    raw = effective_atk - effective_def * DEF_DAMAGE_FACTOR
+    floor = max(1, round(effective_atk * DAMAGE_MIN_RATIO))
+    damage = max(raw, floor)
+    if target_max_hp > 0:
+        damage = min(damage, max(floor, target_max_hp * cap_ratio))
+    return max(1, round(damage))
 
 
 def skill_summary(effect_type: str, scope: str, stat: str | None, potency: int) -> str:
@@ -171,37 +188,12 @@ def _alive_with_index(deck: list[BattleCard]) -> list[tuple[int, BattleCard]]:
 
 
 def _stun_duration(potency_pct: int) -> int:
-    """등급이 오를수록 1 -> 2 -> 3턴. (스킬 위력표 E15/D22/C30/B40/A55/S75 기준)"""
-    if potency_pct >= 55:
+    """등급이 오를수록 1 -> 2 -> 3턴. (스킬 위력표 E20/D28/C36/B46/A58/S72 기준)"""
+    if potency_pct >= 58:
         return 3
-    if potency_pct >= 30:
+    if potency_pct >= 36:
         return 2
     return 1
-
-
-def _build_turn_order(deck_a: list[BattleCard], deck_b: list[BattleCard]) -> list[tuple[str, BattleCard]]:
-    """양 진영이 한 명씩 번갈아 행동하도록 순서를 짠다.
-
-    진영 안에서는 무력이 높은 카드가 먼저 나서고, 선공은 가장 빠른 카드를 가진
-    쪽이 가져간다. 한쪽 인원이 더 많으면 남는 카드는 뒤에 이어서 행동한다.
-    (스킬로 얻는 추가 행동만 이 번갈아 규칙의 예외다.)
-    """
-    queue_a = [("A", c) for _, c in _alive_with_index(deck_a)]
-    queue_b = [("B", c) for _, c in _alive_with_index(deck_b)]
-    queue_a.sort(key=lambda t: t[1].war_stat, reverse=True)
-    queue_b.sort(key=lambda t: t[1].war_stat, reverse=True)
-
-    a_lead = queue_a[0][1].war_stat if queue_a else -1
-    b_lead = queue_b[0][1].war_stat if queue_b else -1
-    first, second = (queue_a, queue_b) if a_lead >= b_lead else (queue_b, queue_a)
-
-    order = []
-    for i in range(max(len(first), len(second))):
-        if i < len(first):
-            order.append(first[i])
-        if i < len(second):
-            order.append(second[i])
-    return order
 
 
 async def _pick_target(side: str, actor: BattleCard, targets: list[tuple[int, BattleCard]], choose_target):
@@ -223,7 +215,7 @@ async def _basic_attack(side: str, attacker: BattleCard, decks: dict, sides: dic
     if random.random() < hit_chance:
         atk_val = attacker.effective_atk * sides[side].atk_mult
         def_val = defender.effective_def * sides[enemy_side].def_mult
-        dmg = _calc_damage(atk_val, def_val)
+        dmg = _calc_damage(atk_val, def_val, defender.max_hp)
         defender.hp -= dmg
         await emit({
             "kind": "attack",
@@ -273,7 +265,7 @@ async def _use_skill(side: str, attacker: BattleCard, decks: dict, sides: dict, 
             for t_idx, defender in _alive_with_index(decks[enemy_side]):
                 atk_val = attacker.effective_atk * own_side.atk_mult * multiplier
                 def_val = defender.effective_def * enemy_side_state.def_mult
-                dmg = _calc_damage(atk_val, def_val)
+                dmg = _calc_damage(atk_val, def_val, defender.max_hp, SKILL_DAMAGE_CAP_RATIO)
                 defender.hp -= dmg
                 await emit({
                     "kind": "skill_damage",
@@ -293,7 +285,7 @@ async def _use_skill(side: str, attacker: BattleCard, decks: dict, sides: dict, 
             t_idx, defender = await _pick_target(side, attacker, targets, choose_target)
             atk_val = attacker.effective_atk * own_side.atk_mult * multiplier
             def_val = defender.effective_def * enemy_side_state.def_mult
-            dmg = _calc_damage(atk_val, def_val)
+            dmg = _calc_damage(atk_val, def_val, defender.max_hp, SKILL_DAMAGE_CAP_RATIO)
             defender.hp -= dmg
             await emit({
                 "kind": "skill_damage",
@@ -436,7 +428,8 @@ async def _deathmatch_skill(side: str, fighter: BattleCard, foe_side: str, foe: 
     })
 
     async def strike(multiplier: float, label: str) -> None:
-        dmg = _calc_damage(fighter.effective_atk * power * multiplier, foe.effective_def)
+        dmg = _calc_damage(fighter.effective_atk * power * multiplier, foe.effective_def,
+                            foe.max_hp, SKILL_DAMAGE_CAP_RATIO)
         foe.hp -= dmg
         await emit({
             "kind": "deathmatch_attack", "is_skill": True,
@@ -499,7 +492,7 @@ async def _deathmatch_turn(side: str, fighter: BattleCard, foe_side: str, foe: B
 
     hit_chance = min(0.99, BASE_HIT_CHANCE * fighter.acc_mult)
     if random.random() < hit_chance:
-        dmg = _calc_damage(fighter.effective_atk * power, foe.effective_def)
+        dmg = _calc_damage(fighter.effective_atk * power, foe.effective_def, foe.max_hp)
         foe.hp -= dmg
         await emit({
             "kind": "deathmatch_attack", "is_skill": False,
@@ -636,42 +629,60 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
         "text": "전투 시작!",
     })
 
-    round_no = 0
-    while round_no < MAX_ROUNDS and deck_a and deck_b:
+    # 두 진영은 예외 없이 한 번씩 번갈아 행동한다. 각 진영은 자기 차례가 올 때마다
+    # 살아있는 카드를 무력 순으로 한 바퀴씩 돌려 쓴다. 인원이 적은 쪽은 같은 카드가
+    # 더 자주 나올 뿐, 행동 횟수 자체는 양쪽이 똑같다.
+    # (라운드는 A진영이 자기 카드를 한 바퀴 다 돌렸을 때 넘어간다.)
+    lead_a = max((c.war_stat for c in deck_a), default=-1)
+    lead_b = max((c.war_stat for c in deck_b), default=-1)
+    last_side = "B" if lead_a >= lead_b else "A"   # 빠른 쪽이 선공하도록 반대편을 넣어둔다
+    rotation = {"A": 0, "B": 0}
+
+    round_no = 1
+    await emit({"kind": "round_start", "round": round_no, "text": f"--- {round_no}라운드 ---"})
+
+    while round_no <= MAX_ROUNDS:
         if not _alive_with_index(deck_a) or not _alive_with_index(deck_b):
             break
-        round_no += 1
-        queue = _build_turn_order(deck_a, deck_b)
-        await emit({"kind": "round_start", "round": round_no, "text": f"--- {round_no}라운드 ---"})
 
-        for side, card in queue:
-            if card.hp <= 0:
-                continue
-            enemy_side = "B" if side == "A" else "A"
-            if not _alive_with_index(decks[enemy_side]) or not _alive_with_index(decks[side]):
+        side = "B" if last_side == "A" else "A"
+        order = sorted((c for _, c in _alive_with_index(decks[side])),
+                       key=lambda c: c.war_stat, reverse=True)
+        if not order:
+            break
+        index = rotation[side] % len(order)
+        card = order[index]
+        rotation[side] = index + 1
+        wrapped = rotation[side] >= len(order)
+        if wrapped:
+            rotation[side] = 0
+        last_side = side
+
+        await emit({
+            "kind": "turn_start",
+            "side": side, "pos": decks[side].index(card), "name": card.name,
+            "text": f"{names[side]}의 차례 - {card.name}",
+        })
+
+        if card.stun_turns > 0:
+            card.stun_turns -= 1
+            await emit({"kind": "stunned", "side": side, "pos": decks[side].index(card), "name": card.name,
+                        "text": f"{card.name}은(는) 무력화 상태라 움직이지 못했다."})
+        elif card.mp >= card.max_mp:
+            await _use_skill(side, card, decks, sides, emit, choose_target)
+            card.mp = 0
+        else:
+            await _basic_attack(side, card, decks, sides, emit, choose_target)
+
+        # A진영이 한 바퀴를 다 돌면 한 라운드가 지난 것으로 본다
+        if side == "A" and wrapped:
+            if not _alive_with_index(deck_a) or not _alive_with_index(deck_b):
                 break
-
-            await emit({
-                "kind": "turn_start",
-                "side": side, "pos": decks[side].index(card), "name": card.name,
-                "text": f"{names[side]}의 차례 - {card.name}",
-            })
-
-            if card.stun_turns > 0:
-                card.stun_turns -= 1
-                await emit({"kind": "stunned", "side": side, "pos": decks[side].index(card), "name": card.name,
-                            "text": f"{card.name}은(는) 무력화 상태라 움직이지 못했다."})
-                continue
-
-            if card.mp >= card.max_mp:
-                await _use_skill(side, card, decks, sides, emit, choose_target)
-                card.mp = 0
-            else:
-                await _basic_attack(side, card, decks, sides, emit, choose_target)
-
-        if not _alive_with_index(deck_a) or not _alive_with_index(deck_b):
-            break
-        await _tick_plague(decks, emit)
+            await _tick_plague(decks, emit)
+            round_no += 1
+            if round_no <= MAX_ROUNDS:
+                await emit({"kind": "round_start", "round": round_no,
+                            "text": f"--- {round_no}라운드 ---"})
 
     alive_a, alive_b = _alive_with_index(deck_a), _alive_with_index(deck_b)
     if alive_a and not alive_b:
