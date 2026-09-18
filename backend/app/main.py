@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,8 +8,15 @@ from pydantic import BaseModel
 
 from db import get_connection, init_db
 from gacha import GACHA_COST, perform_draw
-from battle import build_battle_card, simulate_deck_battle
+from battle import build_battle_card, card_snapshot, run_team_battle
 from rooms import manager as room_manager, RoomPlayer, Room, MAX_PLAYERS_PER_ROOM
+
+TARGET_TIMEOUT_SEC = 20
+
+
+def _ai_pick_target(targets: list[tuple[int, object]]) -> tuple[int, object]:
+    """AI 위임 시 대상 선택: 체력이 가장 낮은 적을 집중 공격."""
+    return min(targets, key=lambda t: t[1].hp)
 
 
 @asynccontextmanager
@@ -181,7 +189,8 @@ def _load_deck(conn, player_card_ids: list[int]):
 
 
 @app.post("/battle/simulate")
-def battle_simulate(req: BattleRequest):
+async def battle_simulate(req: BattleRequest):
+    """대상 선택을 전부 AI에게 맡기는 자동 시뮬레이션 (테스트/디버그용)."""
     if len(req.deck_a) != 5 or len(req.deck_b) != 5:
         raise HTTPException(status_code=400, detail="덱은 반드시 5장이어야 합니다.")
 
@@ -190,7 +199,16 @@ def battle_simulate(req: BattleRequest):
     deck_b = _load_deck(conn, req.deck_b)
     conn.close()
 
-    return simulate_deck_battle(deck_a, deck_b)
+    events: list[dict] = []
+
+    async def emit(event):
+        events.append(event)
+
+    async def choose_target(side, actor, targets):
+        return _ai_pick_target(targets)
+
+    result = await run_team_battle(deck_a, deck_b, emit, choose_target)
+    return {**result, "events": events}
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +235,7 @@ def list_rooms():
             "in_battle": any(p.deck is not None for p in room.players.values()),
         }
         for room in room_manager.list_rooms()
-        if not room.is_full()
+        if not room.is_full() and not room.is_solo
     ]
 
 
@@ -241,6 +259,8 @@ def join_room(room_code: str, req: JoinRoomRequest):
     room = room_manager.get_room(room_code)
     if room is None:
         raise HTTPException(status_code=404, detail="존재하지 않는 방입니다.")
+    if room.is_solo:
+        raise HTTPException(status_code=400, detail="싱글 플레이 방에는 참가할 수 없습니다.")
     if room.is_full():
         raise HTTPException(status_code=400, detail="방 인원이 가득 찼습니다.")
 
@@ -257,6 +277,46 @@ def join_room(room_code: str, req: JoinRoomRequest):
     }
 
 
+AI_NICKNAME = "AI"
+
+
+def _draw_ai_deck(conn, ai_player_id: int) -> list[int]:
+    """무작위 장수 카드 5장을 AI 소유로 만들어서 player_card_id 목록을 반환."""
+    cur = conn.cursor()
+    card_rows = cur.execute("SELECT id FROM general_cards ORDER BY RANDOM() LIMIT 5").fetchall()
+    deck_ids = []
+    for row in card_rows:
+        cur.execute(
+            "INSERT INTO player_cards (player_id, general_card_id) VALUES (?, ?)",
+            (ai_player_id, row["id"]),
+        )
+        deck_ids.append(cur.lastrowid)
+    conn.commit()
+    return deck_ids
+
+
+@app.post("/rooms/{room_code}/ai_opponent")
+def add_ai_opponent(room_code: str):
+    """싱글 플레이용 - 방에 AI 상대를 추가하고 무작위 장수 카드 5장으로 덱을 바로 채워준다."""
+    room = room_manager.get_room(room_code)
+    if room is None:
+        raise HTTPException(status_code=404, detail="존재하지 않는 방입니다.")
+    if room.is_full():
+        raise HTTPException(status_code=400, detail="방 인원이 가득 찼습니다.")
+
+    conn = get_connection()
+    ai_player = _create_player_row(conn, AI_NICKNAME)
+    deck_ids = _draw_ai_deck(conn, ai_player["id"])
+    conn.close()
+
+    room.players[ai_player["id"]] = RoomPlayer(
+        player_id=ai_player["id"], nickname=AI_NICKNAME,
+        ready=True, deck=deck_ids, auto_target=True,
+    )
+    room.is_solo = True
+    return {"room_code": room.code, "ai_player_id": ai_player["id"]}
+
+
 def _lobby_payload(room: Room) -> dict:
     return {
         "type": "lobby_update",
@@ -269,6 +329,7 @@ def _lobby_payload(room: Room) -> dict:
                 "nickname": p.nickname,
                 "ready": p.ready,
                 "deck_submitted": p.deck is not None,
+                "auto_target": p.auto_target,
             }
             for p in room.players.values()
         ],
@@ -296,6 +357,7 @@ async def _maybe_run_battle(room: Room) -> None:
         return
 
     p1, p2 = contenders
+    players_by_side = {"A": p1, "B": p2}
     conn = get_connection()
     try:
         deck_a = _load_deck(conn, p1.deck)
@@ -303,7 +365,37 @@ async def _maybe_run_battle(room: Room) -> None:
     finally:
         conn.close()
 
-    result = simulate_deck_battle(deck_a, deck_b)
+    async def emit(event: dict) -> None:
+        await _broadcast(room, {"type": "battle_event", **event})
+
+    async def choose_target(side, actor, targets):
+        player = players_by_side[side]
+        if player.auto_target or player.websocket is None:
+            return _ai_pick_target(targets)
+
+        enemy_side = "B" if side == "A" else "A"
+        future = asyncio.get_running_loop().create_future()
+        player.pending_target = future
+        try:
+            await player.websocket.send_json({
+                "type": "await_target",
+                "actor": actor.name,
+                "targets": [
+                    {**card_snapshot(c), "side": enemy_side, "pos": idx} for idx, c in targets
+                ],
+                "timeout_sec": TARGET_TIMEOUT_SEC,
+            })
+            target_pos = await asyncio.wait_for(future, timeout=TARGET_TIMEOUT_SEC)
+            for idx, c in targets:
+                if idx == target_pos:
+                    return idx, c
+            return _ai_pick_target(targets)
+        except Exception:
+            return _ai_pick_target(targets)
+        finally:
+            player.pending_target = None
+
+    result = await run_team_battle(deck_a, deck_b, emit, choose_target)
     winner_nickname = p1.nickname if result["winner"] == "A" else p2.nickname
 
     await _broadcast(room, {
@@ -317,6 +409,15 @@ async def _maybe_run_battle(room: Room) -> None:
     for p in room.players.values():
         p.deck = None
         p.ready = False
+
+    if room.is_solo:
+        ai_player = next((p for p in room.players.values() if p.nickname == AI_NICKNAME), None)
+        if ai_player is not None:
+            conn = get_connection()
+            ai_player.deck = _draw_ai_deck(conn, ai_player.player_id)
+            conn.close()
+            ai_player.ready = True
+            await _broadcast(room, _lobby_payload(room))
 
 
 @app.websocket("/ws/rooms/{room_code}")
@@ -348,6 +449,15 @@ async def room_websocket(websocket: WebSocket, room_code: str, player_id: int):
                 player.deck = deck
                 await _broadcast(room, _lobby_payload(room))
                 await _maybe_run_battle(room)
+
+            elif msg_type == "set_auto":
+                player.auto_target = bool(data.get("auto"))
+                await _broadcast(room, _lobby_payload(room))
+
+            elif msg_type == "choose_target":
+                future = player.pending_target
+                if future is not None and not future.done():
+                    future.set_result(data.get("pos"))
 
     except WebSocketDisconnect:
         room.players.pop(player_id, None)

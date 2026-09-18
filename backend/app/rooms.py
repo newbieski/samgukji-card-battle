@@ -32,6 +32,8 @@ class RoomPlayer:
     websocket: object = None
     ready: bool = False
     deck: list | None = None
+    auto_target: bool = False       # true면 대상 선택을 AI에게 위임
+    pending_target: object = None   # 대상 응답을 기다리는 asyncio.Future (있을 때만)
 
 
 @dataclass
@@ -40,6 +42,7 @@ class Room:
     host_player_id: int
     title: str = "이름없는 방"
     players: dict = field(default_factory=dict)  # player_id -> RoomPlayer
+    is_solo: bool = False  # true면 AI 상대가 낀 싱글 플레이 방 - 공개 목록에서 숨김
 
     def is_full(self) -> bool:
         return len(self.players) >= MAX_PLAYERS_PER_ROOM

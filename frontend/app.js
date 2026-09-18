@@ -46,6 +46,42 @@ async function refreshRings() {
 // 입장 화면
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 싱글/멀티 모드 선택
+// ---------------------------------------------------------------------------
+
+function setEntryMode(mode) {
+  document.getElementById("tabModeSingle").classList.toggle("active", mode === "single");
+  document.getElementById("tabModeMulti").classList.toggle("active", mode === "multi");
+  document.getElementById("singleModeBox").classList.toggle("hidden", mode !== "single");
+  document.getElementById("multiModeBox").classList.toggle("hidden", mode !== "multi");
+  document.getElementById("entryError").textContent = "";
+}
+
+document.getElementById("tabModeSingle").addEventListener("click", () => setEntryMode("single"));
+document.getElementById("tabModeMulti").addEventListener("click", () => setEntryMode("multi"));
+setEntryMode("single");
+
+document.getElementById("btnStartSingle").addEventListener("click", async () => {
+  const nickname = document.getElementById("nicknameInput").value.trim();
+  const errorEl = document.getElementById("entryError");
+  errorEl.textContent = "";
+  if (!nickname) {
+    errorEl.textContent = "닉네임을 입력하세요.";
+    return;
+  }
+  try {
+    const res = await api("/rooms", {
+      method: "POST",
+      body: JSON.stringify({ nickname, title: `${nickname}의 연습 대결` }),
+    });
+    await api(`/rooms/${res.room_code}/ai_opponent`, { method: "POST" });
+    enterRoom(res);
+  } catch (e) {
+    errorEl.textContent = e.message;
+  }
+});
+
 document.getElementById("btnCreateRoom").addEventListener("click", async () => {
   const nickname = document.getElementById("nicknameInput").value.trim();
   const title = document.getElementById("roomTitleInput").value.trim();
@@ -144,8 +180,12 @@ function connectWebSocket() {
     const data = JSON.parse(event.data);
     if (data.type === "lobby_update") {
       renderLobby(data);
+    } else if (data.type === "battle_event") {
+      queueBattleEvent(data);
+    } else if (data.type === "await_target") {
+      showTargetPrompt(data);
     } else if (data.type === "battle_result") {
-      renderBattleResult(data);
+      onBattleResult(data);
     } else if (data.type === "error") {
       document.getElementById("lobbyStatus").textContent = data.message;
     }
@@ -170,8 +210,13 @@ function renderLobby(data) {
     if (p.player_id === data.host_player_id) tags += `<span class="tag tag-host">방장</span>`;
     if (p.ready) tags += `<span class="tag tag-ready">준비완료</span>`;
     if (p.deck_submitted) tags += `<span class="tag tag-deck">덱 제출됨</span>`;
+    if (p.auto_target) tags += `<span class="tag tag-auto">AI 위임</span>`;
     li.innerHTML = `<span>${p.nickname}${p.player_id === state.playerId ? " (나)" : ""}</span><span>${tags}</span>`;
     list.appendChild(li);
+
+    if (p.player_id === state.playerId) {
+      document.getElementById("chkAutoTarget").checked = !!p.auto_target;
+    }
   });
 
   document.getElementById("lobbyStatus").textContent =
@@ -180,6 +225,10 @@ function renderLobby(data) {
 
 document.getElementById("btnToggleReady").addEventListener("click", () => {
   state.ws?.send(JSON.stringify({ type: "ready" }));
+});
+
+document.getElementById("chkAutoTarget").addEventListener("change", (e) => {
+  state.ws?.send(JSON.stringify({ type: "set_auto", auto: e.target.checked }));
 });
 
 document.getElementById("btnGoCards").addEventListener("click", async () => {
@@ -350,99 +399,92 @@ document.getElementById("btnResetDeck").addEventListener("click", () => {
 // 배틀 화면 (이벤트를 한 번에 하나씩 재생)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 전투 (양 덱 5장씩 실시간 라운드제, 서버가 한 번에 이벤트 하나씩 흘려보냄)
+// ---------------------------------------------------------------------------
+
+const EVENT_DELAY_MS = 550;
+
 const battle = {
-  data: null,
-  index: 0,
-  fighters: { A: null, B: null },
+  decks: { A: [], B: [] },   // 각 5칸: 카드 스냅샷 객체 또는 null
+  queue: [],
+  playing: false,
+  fastForward: false,
+  targetContext: null,       // {actor, targets:[{side,pos,...}]} - 내가 대상을 골라야 할 때
 };
 
-function renderBattleResult(data) {
-  document.getElementById("battleTitle").textContent = `${data.player_a} vs ${data.player_b}`;
-
-  battle.data = data;
-  battle.index = 0;
-  battle.fighters = { A: null, B: null };
-
-  document.getElementById("battleLog").innerHTML = "";
-  document.getElementById("battleEventText").textContent = "전투 시작!";
-  document.getElementById("btnBattleNext").classList.remove("hidden");
-  document.getElementById("btnBattleSkip").classList.remove("hidden");
-  document.getElementById("btnBattleBack").classList.add("hidden");
-
-  showScreen("battle");
-  refreshRings();
+function getBattleCard(side, pos) {
+  return battle.decks[side]?.[pos] ?? null;
 }
 
-function setFighterUI(side, fighter) {
-  const nameEl = document.getElementById(`fighter${side}Name`);
-  const skillEl = document.getElementById(`fighter${side}Skill`);
-  const portraitEl = document.getElementById(`fighter${side}Portrait`);
-  const hpFillEl = document.getElementById(`fighter${side}HpFill`);
-  const hpTextEl = document.getElementById(`fighter${side}HpText`);
-  const mpFillEl = document.getElementById(`fighter${side}MpFill`);
-  const mpTextEl = document.getElementById(`fighter${side}MpText`);
-  const atkEl = document.getElementById(`fighter${side}Atk`);
+function resetBattleUI() {
+  battle.decks = { A: [], B: [] };
+  battle.queue = [];
+  battle.playing = false;
+  battle.fastForward = false;
+  clearTargetPrompt();
+  document.getElementById("battleLog").innerHTML = "";
+  document.getElementById("battleEventText").textContent = "전투 시작!";
+  document.getElementById("btnBattleSkip").classList.remove("hidden");
+  document.getElementById("btnBattleBack").classList.add("hidden");
+  showScreen("battle");
+}
 
-  if (!fighter) {
-    nameEl.textContent = "-";
-    skillEl.textContent = "-";
-    portraitEl.src = "";
-    hpFillEl.style.width = "0%";
-    hpTextEl.textContent = "-/-";
-    mpFillEl.style.width = "0%";
-    mpTextEl.textContent = "-/-";
-    atkEl.textContent = "ATK -";
-    return;
+function queueBattleEvent(ev) {
+  if (ev.kind === "battle_start") {
+    resetBattleUI();
   }
+  battle.queue.push(ev);
+  if (!battle.playing) pumpBattleQueue();
+}
 
-  nameEl.textContent = fighter.name;
-  skillEl.textContent = fighter.skill_name ? `「${fighter.skill_name}」` : "";
-  portraitEl.src = portraitSrc(fighter.name);
-  portraitEl.onerror = () => { portraitEl.onerror = null; portraitEl.src = FALLBACK_PORTRAIT; };
+async function pumpBattleQueue() {
+  battle.playing = true;
+  while (battle.queue.length > 0) {
+    const ev = battle.queue.shift();
+    applyBattleEvent(ev);
+    if (!battle.fastForward && ev.kind !== "battle_start") {
+      await new Promise((resolve) => setTimeout(resolve, EVENT_DELAY_MS));
+    }
+  }
+  battle.playing = false;
+}
 
-  const hpPct = Math.max(0, Math.min(100, (fighter.hp / fighter.max_hp) * 100));
-  hpFillEl.style.width = `${hpPct}%`;
-  hpFillEl.classList.toggle("low", hpPct <= 30);
-  hpTextEl.textContent = `${Math.max(fighter.hp, 0)}/${fighter.max_hp}`;
+function cardSlotHtml(side, pos, card) {
+  if (!card) return `<div class="battle-slot empty"></div>`;
+  const dead = card.hp <= 0;
+  const hpPct = card.max_hp ? Math.max(0, Math.min(100, (card.hp / card.max_hp) * 100)) : 0;
+  const mpPct = card.max_mp ? Math.max(0, Math.min(100, (card.mp / card.max_mp) * 100)) : 0;
+  const badges = [
+    card.stunned ? `<span class="status-badge" title="무력화">💫</span>` : "",
+    card.infected ? `<span class="status-badge" title="역병">☠️</span>` : "",
+  ].join("");
+  return `
+    <div class="battle-slot rarity-${card.rarity}${dead ? " dead" : ""}" data-side="${side}" data-pos="${pos}">
+      <img class="battle-slot-portrait" src="${portraitSrc(card.name)}" alt=""
+           onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
+      <div class="battle-slot-info">
+        <div class="battle-slot-name">${card.name}<span class="battle-slot-badges">${badges}</span></div>
+        <div class="hp-bar-track small"><div class="hp-bar-fill${hpPct <= 30 ? " low" : ""}" style="width:${hpPct}%"></div></div>
+        <div class="mp-bar-track small"><div class="mp-bar-fill${mpPct >= 100 ? " full" : ""}" style="width:${mpPct}%"></div></div>
+      </div>
+    </div>`;
+}
 
-  const mpPct = fighter.max_mp ? Math.max(0, Math.min(100, (fighter.mp / fighter.max_mp) * 100)) : 0;
-  mpFillEl.style.width = `${mpPct}%`;
-  mpFillEl.classList.toggle("full", mpPct >= 100);
-  mpTextEl.textContent = `${Math.max(fighter.mp ?? 0, 0)}/${fighter.max_mp ?? 0}`;
-
-  atkEl.textContent = `ATK ${fighter.atk ?? "-"}`;
+function renderDeckColumn(side) {
+  const el = document.getElementById(`deckColumn${side}`);
+  el.innerHTML = battle.decks[side].map((c, i) => cardSlotHtml(side, i, c)).join("");
+  if (battle.targetContext) highlightTargets();
 }
 
 const FLASH_CLASSES = ["flash-hit", "flash-skill-hit", "flash-heal", "flash-buff", "flash-debuff", "flash-miss"];
 
-function flashFighter(side, kind) {
-  const el = document.querySelector(`.fighter-${side.toLowerCase()}`);
+function flashSlot(side, pos, kind) {
+  const el = document.querySelector(`.battle-slot[data-side="${side}"][data-pos="${pos}"]`);
   if (!el) return;
-  const cls = kind === "heal" ? "flash-heal" : kind === "buff" ? "flash-buff"
-    : kind === "debuff" ? "flash-debuff" : kind === "miss" ? "flash-miss"
-    : kind === "skill-hit" ? "flash-skill-hit" : "flash-hit";
   el.classList.remove(...FLASH_CLASSES);
-  // 강제 리플로우로 애니메이션 재시작
-  void el.offsetWidth;
-  el.classList.add(cls);
-}
-
-function lungeFighter(side) {
-  const el = document.querySelector(`.fighter-${side.toLowerCase()}`);
-  if (!el) return;
-  const cls = side === "A" ? "lunge-right" : "lunge-left";
-  el.classList.remove("lunge-right", "lunge-left");
-  void el.offsetWidth;
-  el.classList.add(cls);
-}
-
-function spawnSpark(side, isSkill) {
-  const el = document.querySelector(`.fighter-${side.toLowerCase()}`);
-  if (!el) return;
-  const spark = document.createElement("div");
-  spark.className = isSkill ? "hit-spark hit-spark-skill" : "hit-spark";
-  el.appendChild(spark);
-  spark.addEventListener("animationend", () => spark.remove());
+  void el.offsetWidth; // 강제 리플로우로 애니메이션 재시작
+  el.classList.add(`flash-${kind}`);
 }
 
 let skillBannerTimer = null;
@@ -466,101 +508,172 @@ function appendLogLine(text, cls) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-function applyBattleEvent(ev) {
-  const isSkill = ev.kind?.startsWith("skill_");
-
-  // 행동 주체의 MP 게이지는 공격/스킬 이벤트마다 서버가 계산해서 넘겨준다
-  if (ev.actor_side && ev.actor_mp !== undefined && battle.fighters[ev.actor_side]) {
-    battle.fighters[ev.actor_side].mp = ev.actor_mp;
-  }
-
+function applyEventToState(ev) {
   switch (ev.kind) {
-    case "duel_start":
-      battle.fighters.A = { ...ev.a };
-      battle.fighters.B = { ...ev.b };
-      appendLogLine(ev.text, "duel-line");
-      break;
-
     case "attack":
-    case "skill_damage": {
-      const targetSide = ev.target_side;
-      battle.fighters[targetSide].hp = ev.target_hp;
-      lungeFighter(ev.actor_side);
-      flashFighter(targetSide, isSkill ? "skill-hit" : "hit");
-      spawnSpark(targetSide, isSkill);
-      if (isSkill) showSkillBanner(ev.actor, ev.skill_name);
-      appendLogLine(ev.text, "event-line");
-      break;
-    }
-
-    case "miss": {
-      lungeFighter(ev.actor_side);
-      flashFighter(ev.target_side, "miss");
-      appendLogLine(ev.text, "event-line");
-      break;
-    }
-
+    case "skill_damage":
     case "skill_heal": {
-      battle.fighters[ev.actor_side].hp = ev.actor_hp;
-      flashFighter(ev.actor_side, "heal");
-      showSkillBanner(ev.actor, ev.skill_name);
-      appendLogLine(ev.text, "event-line");
+      const t = getBattleCard(ev.target_side, ev.target_pos);
+      if (t) t.hp = ev.target_hp;
       break;
     }
-
     case "skill_heal_mp":
-      showSkillBanner(ev.actor, ev.skill_name);
-      appendLogLine(ev.text, "event-line");
-      break;
-
-    case "skill_buff":
-      flashFighter(ev.actor_side, "buff");
-      showSkillBanner(ev.actor, ev.skill_name);
-      appendLogLine(ev.text, "event-line");
-      break;
-
-    case "skill_debuff": {
-      const targetSide = ev.team_wide ? (ev.actor_side === "A" ? "B" : "A") : ev.target_side;
-      flashFighter(targetSide, "debuff");
-      showSkillBanner(ev.actor, ev.skill_name);
-      appendLogLine(ev.text, "event-line");
+    case "mp_drain": {
+      const t = getBattleCard(ev.target_side, ev.target_pos);
+      if (t) t.mp = ev.target_mp;
       break;
     }
-
-    case "faint":
-      battle.fighters[ev.side].hp = 0;
-      appendLogLine(ev.text, "event-line");
+    case "stun": {
+      const t = getBattleCard(ev.target_side, ev.target_pos);
+      if (t) t.stunned = true;
       break;
-
-    case "battle_end": {
-      appendLogLine(`🏆 승자: ${battle.data.winner_nickname}`, "winner-line");
-      document.getElementById("battleEventText").textContent = `🏆 승자: ${battle.data.winner_nickname}`;
-      document.getElementById("btnBattleNext").classList.add("hidden");
-      document.getElementById("btnBattleSkip").classList.add("hidden");
-      document.getElementById("btnBattleBack").classList.remove("hidden");
+    }
+    case "swap": {
+      const a = battle.decks[ev.actor_side][ev.actor_pos];
+      const b = battle.decks[ev.target_side][ev.target_pos];
+      battle.decks[ev.actor_side][ev.actor_pos] = b;
+      battle.decks[ev.target_side][ev.target_pos] = a;
+      break;
+    }
+    case "plague_infect": {
+      const t = getBattleCard(ev.target_side, ev.target_pos);
+      if (t) t.infected = true;
+      break;
+    }
+    case "plague_tick": {
+      const t = getBattleCard(ev.side, ev.pos);
+      if (t) t.hp = ev.target_hp;
+      break;
+    }
+    case "plague_spread": {
+      const t = getBattleCard(ev.side, ev.to_pos);
+      if (t) t.infected = true;
+      break;
+    }
+    case "faint": {
+      const c = getBattleCard(ev.side, ev.pos);
+      if (c) { c.hp = 0; c.stunned = false; c.infected = false; }
       break;
     }
   }
+}
 
-  setFighterUI("A", battle.fighters.A);
-  setFighterUI("B", battle.fighters.B);
-  if (ev.kind !== "battle_end") {
+function playEventEffects(ev) {
+  switch (ev.kind) {
+    case "attack":
+      flashSlot(ev.target_side, ev.target_pos, "hit");
+      break;
+    case "skill_damage":
+      flashSlot(ev.target_side, ev.target_pos, "skill-hit");
+      break;
+    case "skill_cast":
+      showSkillBanner(ev.actor, ev.skill_name);
+      break;
+    case "miss":
+      flashSlot(ev.target_side, ev.target_pos, "miss");
+      break;
+    case "skill_heal":
+    case "skill_heal_mp":
+      flashSlot(ev.target_side, ev.target_pos, "heal");
+      break;
+    case "skill_buff":
+    case "extra_turn":
+      flashSlot(ev.actor_side, ev.actor_pos, "buff");
+      break;
+    case "skill_debuff":
+      if (ev.team_wide) {
+        const enemySide = ev.actor_side === "A" ? "B" : "A";
+        (battle.decks[enemySide] || []).forEach((_, i) => flashSlot(enemySide, i, "debuff"));
+      } else {
+        flashSlot(ev.target_side, ev.target_pos, "debuff");
+      }
+      break;
+    case "stun":
+    case "mp_drain":
+      flashSlot(ev.target_side, ev.target_pos, "debuff");
+      break;
+    case "plague_tick":
+      flashSlot(ev.side, ev.pos, "hit");
+      break;
+  }
+}
+
+function applyBattleEvent(ev) {
+  if (ev.kind === "battle_start") {
+    battle.decks.A = ev.deck_a.map((c) => ({ ...c }));
+    battle.decks.B = ev.deck_b.map((c) => ({ ...c }));
+  } else {
+    // 방금 행동한 카드는 더 이상 무력화 상태가 아니다 (스턴이 그새 풀렸으니까 움직인 것)
+    if (ev.actor_side !== undefined && ev.actor_pos !== undefined) {
+      const actor = getBattleCard(ev.actor_side, ev.actor_pos);
+      if (actor) actor.stunned = false;
+    }
+    applyEventToState(ev);
+  }
+
+  renderDeckColumn("A");
+  renderDeckColumn("B");
+  playEventEffects(ev);
+  appendLogLine(ev.text, ev.kind === "round_start" ? "round-line" : "event-line");
+
+  if (ev.kind !== "battle_start") {
     document.getElementById("battleEventText").textContent = ev.text;
   }
 }
 
-document.getElementById("btnBattleNext").addEventListener("click", () => {
-  if (!battle.data || battle.index >= battle.data.events.length) return;
-  applyBattleEvent(battle.data.events[battle.index]);
-  battle.index += 1;
-});
+function highlightTargets() {
+  const ctx = battle.targetContext;
+  if (!ctx) return;
+  ctx.targets.forEach((t) => {
+    const slot = document.querySelector(`.battle-slot[data-side="${t.side}"][data-pos="${t.pos}"]`);
+    if (!slot) return;
+    slot.classList.add("targetable");
+    slot.onclick = () => chooseTarget(t.pos);
+  });
+}
+
+function clearTargetPrompt() {
+  battle.targetContext = null;
+  document.getElementById("targetPrompt").classList.add("hidden");
+  document.querySelectorAll(".battle-slot.targetable").forEach((el) => {
+    el.classList.remove("targetable");
+    el.onclick = null;
+  });
+}
+
+function chooseTarget(pos) {
+  state.ws?.send(JSON.stringify({ type: "choose_target", pos }));
+  clearTargetPrompt();
+}
+
+function showTargetPrompt(data) {
+  battle.targetContext = data;
+  const prompt = document.getElementById("targetPrompt");
+  prompt.textContent = `${data.actor}의 대상을 선택하세요 (${data.timeout_sec}초 안에 고르지 않으면 자동으로 선택됩니다)`;
+  prompt.classList.remove("hidden");
+  highlightTargets();
+}
+
+function onBattleResult(data) {
+  // battle_result는 마지막 battle_event 이후에 도착하지만, 이 시점에 아직 큐에 남아
+  // 재생 대기 중인 이벤트가 있을 수 있다. 승자 배너가 나중에 덮어써지지 않도록
+  // 남은 이벤트를 지연 없이 즉시 다 반영해버린 뒤에 배너를 띄운다.
+  battle.fastForward = true;
+  while (battle.queue.length > 0) {
+    applyBattleEvent(battle.queue.shift());
+  }
+
+  document.getElementById("battleTitle").textContent = `${data.player_a} vs ${data.player_b}`;
+  clearTargetPrompt();
+  document.getElementById("btnBattleSkip").classList.add("hidden");
+  document.getElementById("btnBattleBack").classList.remove("hidden");
+  document.getElementById("battleEventText").textContent = `🏆 승자: ${data.winner_nickname}`;
+  appendLogLine(`🏆 승자: ${data.winner_nickname}`, "winner-line");
+  refreshRings();
+}
 
 document.getElementById("btnBattleSkip").addEventListener("click", () => {
-  if (!battle.data) return;
-  while (battle.index < battle.data.events.length) {
-    applyBattleEvent(battle.data.events[battle.index]);
-    battle.index += 1;
-  }
+  battle.fastForward = true;
 });
 
 document.getElementById("btnBattleBack").addEventListener("click", () => {

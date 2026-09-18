@@ -1,23 +1,28 @@
 """
-턴제 자동전투 엔진 (PvP 1:1 순차 대결).
+라운드제 5:5 팀 전투 엔진.
 
 규칙 요약 (기획 확정 사항):
-- 덱은 5장. 1번 장수끼리 붙어 한쪽이 쓰러지면 다음 장수로 넘어간다.
-- 이긴 쪽은 남은 HP를 그대로 이어서 다음 상대와 싸운다 (누적).
-- 선공은 무력(war_stat)이 높은 쪽이 가져간다.
+- 덱은 5장. 양쪽 덱 전체가 전장에 동시에 나와 있다 (죽을 때까지 계속 참여).
+- 라운드마다: 그 순간 살아있는 카드를 전부 모아 무력(war_stat) 내림차순으로 행동 순서를
+  정하고, 그 순서대로 한 카드씩 딱 한 번의 행동(기본 공격 또는 스킬)을 한다.
+- 기본 공격/단일 대상 스킬은 대상을 골라야 한다. 실제 사람 대상이면 choose_target
+  콜백이 호출되고(웹소켓으로 물어봄), AI 위임 상태면 그 콜백 내부에서 알아서 고른다 -
+  이 파일은 "누가 사람이고 누가 AI인지"를 모른다.
 - 기본 공격을 할 때마다 MP가 차오르고, MP가 가득 차면 그 턴엔 기본 공격 대신
-  고유 스킬이 자동으로 발동한다 (게이지 타입).
+  고유 스킬이 자동으로 발동한다 (게이지 타입, 기존과 동일).
 - 방어력 스탯은 별도로 두지 않고 통솔력(leadership)을 방어력으로 사용한다.
-- 고유 스킬은 damage / heal / buff / debuff 4가지 효과로 단순화되어 있다.
+- 고유 스킬은 9가지 효과로 단순화되어 있다:
+    damage/heal/buff/debuff (기존) +
+    extra_turn(자기 턴을 한 번 더) / stun(최대 3턴 무력화) /
+    swap(적 카드와 진영 위치 교체) / mp_drain(적 MP 감소) /
+    plague(적 하나를 감염시켜 매 라운드 피해 + 같은 편으로 전염)
   (자세한 배경은 seed_data.py 상단 주석 참고)
 
-수치(피해 공식, MP 충전량, 명중률 등)는 모두 placeholder이며 이 파일 상단의
-상수만 조정하면 전체 밸런스를 다시 맞출 수 있다.
+수치(피해 공식, MP 충전량, 명중률, 역병 확산 확률 등)는 모두 placeholder이며 이 파일
+상단의 상수만 조정하면 전체 밸런스를 다시 맞출 수 있다.
 
-전투 결과는 문자열 로그가 아니라 구조화된 이벤트 목록(events)으로 반환한다.
-프론트엔드가 이 이벤트를 한 번에 하나씩 재생하며(사용자 입력으로 다음 진행)
-HP바/공격 연출을 그릴 수 있도록 하기 위함이다. 각 이벤트는 표시용 한국어
-문장(text)도 함께 담고 있어, 별도 문구 조합 로직 없이도 바로 로그로 쓸 수 있다.
+전투는 이벤트를 하나씩 만들 때마다 emit(event) 콜백으로 즉시 흘려보낸다 (실시간 진행).
+과거처럼 한 번에 다 계산해서 통째로 돌려주고 클라이언트가 재생하는 방식이 아니다.
 """
 
 import random
@@ -28,7 +33,10 @@ MP_FILL_ATTACKS = 3          # 기본 공격 약 3회면 MP가 가득 참
 BASE_HIT_CHANCE = 0.95
 DEF_DAMAGE_FACTOR = 0.5      # 피해 = atk - def * DEF_DAMAGE_FACTOR
 ENEMY_TEAM_DAMAGE_BONUS = 1.2  # '전체 공격' 스킬은 단일 대상보다 더 강하게 처리
-MAX_TURNS_PER_DUEL = 60
+MAX_ROUNDS = 30
+
+PLAGUE_DURATION = 3           # 역병 지속 라운드
+PLAGUE_SPREAD_CHANCE = 0.5    # 매 라운드 감염자가 같은 편 미감염 카드에게 옮길 확률
 
 
 @dataclass
@@ -36,7 +44,7 @@ class BattleCard:
     name: str
     rarity: str
     skill_name: str
-    skill_effect_type: str   # damage | heal | buff | debuff
+    skill_effect_type: str   # damage | heal | buff | debuff | extra_turn | stun | swap | mp_drain | plague
     skill_scope: str         # enemy | enemy_team | self | team
     skill_stat: str | None   # atk | def | acc | hp | mp | None
     skill_potency: int
@@ -51,6 +59,9 @@ class BattleCard:
     atk_mult: float = field(default=1.0, init=False)
     def_mult: float = field(default=1.0, init=False)
     acc_mult: float = field(default=1.0, init=False)
+    stun_turns: int = field(default=0, init=False)
+    plague_turns: int = field(default=0, init=False)
+    plague_dmg: int = field(default=0, init=False)
 
     def __post_init__(self):
         self.hp = self.max_hp
@@ -97,7 +108,7 @@ def _calc_damage(effective_atk: float, effective_def: float) -> int:
     return max(1, round(effective_atk - effective_def * DEF_DAMAGE_FACTOR))
 
 
-def _card_snapshot(card: BattleCard) -> dict:
+def card_snapshot(card: BattleCard) -> dict:
     return {
         "name": card.name,
         "rarity": card.rarity,
@@ -107,52 +118,143 @@ def _card_snapshot(card: BattleCard) -> dict:
         "max_mp": card.max_mp,
         "atk": card.atk,
         "skill_name": card.skill_name,
+        "stunned": card.stun_turns > 0,
+        "infected": card.plague_turns > 0,
     }
 
 
-def _apply_skill(attacker: BattleCard, defender: BattleCard, attacker_side: str,
-                  own_side: SideState, enemy_side: SideState, events: list) -> None:
+def _deck_snapshot(deck: list[BattleCard]) -> list[dict]:
+    return [card_snapshot(c) for c in deck]
+
+
+def _alive_with_index(deck: list[BattleCard]) -> list[tuple[int, BattleCard]]:
+    return [(i, c) for i, c in enumerate(deck) if c.hp > 0]
+
+
+def _stun_duration(potency_pct: int) -> int:
+    if potency_pct >= 40:
+        return 3
+    if potency_pct >= 22:
+        return 2
+    return 1
+
+
+async def _pick_target(side: str, actor: BattleCard, targets: list[tuple[int, BattleCard]], choose_target):
+    """targets가 하나뿐이면 그냥 그걸 쓰고, 여럿이면 choose_target 콜백에 물어본다."""
+    if len(targets) == 1:
+        return targets[0]
+    return await choose_target(side, actor, targets)
+
+
+async def _basic_attack(side: str, attacker: BattleCard, decks: dict, sides: dict, emit, choose_target) -> None:
+    enemy_side = "B" if side == "A" else "A"
+    actor_pos = decks[side].index(attacker)
+    targets = _alive_with_index(decks[enemy_side])
+    if not targets:
+        return
+    t_idx, defender = await _pick_target(side, attacker, targets, choose_target)
+
+    hit_chance = min(0.99, BASE_HIT_CHANCE * attacker.acc_mult)
+    if random.random() < hit_chance:
+        atk_val = attacker.effective_atk * sides[side].atk_mult
+        def_val = defender.effective_def * sides[enemy_side].def_mult
+        dmg = _calc_damage(atk_val, def_val)
+        defender.hp -= dmg
+        await emit({
+            "kind": "attack",
+            "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+            "target_side": enemy_side, "target_pos": t_idx, "target": defender.name, "amount": dmg,
+            "target_hp": max(defender.hp, 0), "target_max_hp": defender.max_hp,
+            "text": f"{attacker.name}의 공격! {defender.name}에게 {dmg}의 피해. (HP {max(defender.hp, 0)}/{defender.max_hp})",
+        })
+        if defender.hp <= 0:
+            await emit({
+                "kind": "faint", "side": enemy_side, "pos": t_idx, "name": defender.name,
+                "text": f"{defender.name} 쓰러짐!",
+            })
+    else:
+        await emit({
+            "kind": "miss",
+            "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+            "target_side": enemy_side, "target_pos": t_idx, "target": defender.name,
+            "text": f"{attacker.name}의 공격이 빗나갔다.",
+        })
+    attacker.mp = min(attacker.max_mp, attacker.mp + attacker.mp_gain_per_attack)
+
+
+async def _use_skill(side: str, attacker: BattleCard, decks: dict, sides: dict, emit, choose_target) -> None:
     effect = attacker.skill_effect_type
     scope = attacker.skill_scope
     stat = attacker.skill_stat
     potency = attacker.skill_potency / 100
-    defender_side = "B" if attacker_side == "A" else "A"
+    enemy_side = "B" if side == "A" else "A"
+    own_side, enemy_side_state = sides[side], sides[enemy_side]
+    actor_pos = decks[side].index(attacker)
+
+    await emit({
+        "kind": "skill_cast",
+        "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name, "skill_name": attacker.skill_name,
+        "text": f"{attacker.name}의 '{attacker.skill_name}'!",
+    })
 
     if effect == "damage":
         multiplier = 1 + potency
         if scope == "enemy_team":
             multiplier *= ENEMY_TEAM_DAMAGE_BONUS
-        atk_val = attacker.effective_atk * own_side.atk_mult * multiplier
-        def_val = defender.effective_def * enemy_side.def_mult
-        dmg = _calc_damage(atk_val, def_val)
-        defender.hp -= dmg
-        events.append({
-            "kind": "skill_damage",
-            "actor_side": attacker_side, "actor": attacker.name, "skill_name": attacker.skill_name,
-            "target_side": defender_side, "target": defender.name, "amount": dmg,
-            "target_hp": max(defender.hp, 0), "target_max_hp": defender.max_hp,
-            "text": f"{attacker.name}의 '{attacker.skill_name}'! {defender.name}에게 {dmg}의 피해.",
-        })
+            for t_idx, defender in _alive_with_index(decks[enemy_side]):
+                atk_val = attacker.effective_atk * own_side.atk_mult * multiplier
+                def_val = defender.effective_def * enemy_side_state.def_mult
+                dmg = _calc_damage(atk_val, def_val)
+                defender.hp -= dmg
+                await emit({
+                    "kind": "skill_damage",
+                    "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                    "skill_name": attacker.skill_name,
+                    "target_side": enemy_side, "target_pos": t_idx, "target": defender.name, "amount": dmg,
+                    "target_hp": max(defender.hp, 0), "target_max_hp": defender.max_hp,
+                    "text": f"{defender.name}에게 {dmg}의 피해.",
+                })
+                if defender.hp <= 0:
+                    await emit({"kind": "faint", "side": enemy_side, "pos": t_idx, "name": defender.name,
+                                "text": f"{defender.name} 쓰러짐!"})
+        else:
+            targets = _alive_with_index(decks[enemy_side])
+            if not targets:
+                return
+            t_idx, defender = await _pick_target(side, attacker, targets, choose_target)
+            atk_val = attacker.effective_atk * own_side.atk_mult * multiplier
+            def_val = defender.effective_def * enemy_side_state.def_mult
+            dmg = _calc_damage(atk_val, def_val)
+            defender.hp -= dmg
+            await emit({
+                "kind": "skill_damage",
+                "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                "skill_name": attacker.skill_name,
+                "target_side": enemy_side, "target_pos": t_idx, "target": defender.name, "amount": dmg,
+                "target_hp": max(defender.hp, 0), "target_max_hp": defender.max_hp,
+                "text": f"{defender.name}에게 {dmg}의 피해.",
+            })
+            if defender.hp <= 0:
+                await emit({"kind": "faint", "side": enemy_side, "pos": t_idx, "name": defender.name,
+                            "text": f"{defender.name} 쓰러짐!"})
 
     elif effect == "heal":
-        if stat == "mp":
-            heal_mp = round(attacker.max_mp * potency)
-            attacker.mp = min(attacker.max_mp, attacker.mp + heal_mp)
-            events.append({
-                "kind": "skill_heal_mp",
-                "actor_side": attacker_side, "actor": attacker.name, "skill_name": attacker.skill_name,
-                "amount": heal_mp,
-                "text": f"{attacker.name}의 '{attacker.skill_name}'! MP {heal_mp} 회복.",
-            })
-        else:
-            heal_hp = round(attacker.max_hp * potency)
-            attacker.hp = min(attacker.max_hp, attacker.hp + heal_hp)
-            events.append({
-                "kind": "skill_heal",
-                "actor_side": attacker_side, "actor": attacker.name, "skill_name": attacker.skill_name,
-                "amount": heal_hp, "actor_hp": attacker.hp, "actor_max_hp": attacker.max_hp,
-                "text": f"{attacker.name}의 '{attacker.skill_name}'! HP {heal_hp} 회복.",
-            })
+        targets = [(actor_pos, attacker)] if scope == "self" else _alive_with_index(decks[side])
+        for t_idx, target in targets:
+            if stat == "mp":
+                amount = round(target.max_mp * potency)
+                target.mp = min(target.max_mp, target.mp + amount)
+                await emit({"kind": "skill_heal_mp", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                            "target_side": side, "target_pos": t_idx, "target": target.name, "amount": amount,
+                            "target_mp": target.mp, "target_max_mp": target.max_mp,
+                            "text": f"{target.name} MP {amount} 회복."})
+            else:
+                amount = round(target.max_hp * potency)
+                target.hp = min(target.max_hp, target.hp + amount)
+                await emit({"kind": "skill_heal", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                            "target_side": side, "target_pos": t_idx, "target": target.name, "amount": amount,
+                            "target_hp": target.hp, "target_max_hp": target.max_hp,
+                            "text": f"{target.name} HP {amount} 회복."})
 
     elif effect == "buff":
         is_team = scope == "team"
@@ -166,136 +268,176 @@ def _apply_skill(attacker: BattleCard, defender: BattleCard, attacker_side: str,
                 attacker.atk_mult *= (1 + potency)
             else:
                 attacker.def_mult *= (1 + potency)
-        events.append({
-            "kind": "skill_buff",
-            "actor_side": attacker_side, "actor": attacker.name, "skill_name": attacker.skill_name,
-            "team_wide": is_team, "stat": stat,
-            "text": f"{attacker.name}의 '{attacker.skill_name}'! " + ("아군 전체 강화." if is_team else "자신 강화."),
-        })
+        await emit({"kind": "skill_buff", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                    "team_wide": is_team, "stat": stat,
+                    "text": "아군 전체 강화." if is_team else "자신 강화."})
 
     elif effect == "debuff":
         is_team = scope == "enemy_team"
         if is_team:
             if stat == "atk":
-                enemy_side.atk_mult *= (1 - potency)
+                enemy_side_state.atk_mult *= (1 - potency)
             elif stat == "def":
-                enemy_side.def_mult *= (1 - potency)
+                enemy_side_state.def_mult *= (1 - potency)
             else:
-                defender.acc_mult *= (1 - potency)
+                for _, c in _alive_with_index(decks[enemy_side]):
+                    c.acc_mult *= (1 - potency)
+            await emit({"kind": "skill_debuff", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                        "team_wide": True, "stat": stat, "text": "적 전체 약화."})
         else:
+            targets = _alive_with_index(decks[enemy_side])
+            if not targets:
+                return
+            t_idx, defender = await _pick_target(side, attacker, targets, choose_target)
             if stat == "atk":
                 defender.atk_mult *= (1 - potency)
             elif stat == "def":
                 defender.def_mult *= (1 - potency)
             else:
                 defender.acc_mult *= (1 - potency)
-        events.append({
-            "kind": "skill_debuff",
-            "actor_side": attacker_side, "actor": attacker.name, "skill_name": attacker.skill_name,
-            "target_side": defender_side, "target": defender.name, "team_wide": is_team, "stat": stat,
-            "text": f"{attacker.name}의 '{attacker.skill_name}'! " + ("적 전체 약화." if is_team else f"{defender.name} 약화."),
-        })
+            await emit({"kind": "skill_debuff", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                        "target_side": enemy_side, "target_pos": t_idx, "target": defender.name,
+                        "team_wide": False, "stat": stat, "text": f"{defender.name} 약화."})
+
+    elif effect == "extra_turn":
+        await emit({"kind": "extra_turn", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                    "text": f"{attacker.name}, 한 번 더 움직인다!"})
+        if _alive_with_index(decks[enemy_side]):
+            await _basic_attack(side, attacker, decks, sides, emit, choose_target)
+
+    elif effect == "stun":
+        targets = _alive_with_index(decks[enemy_side])
+        if not targets:
+            return
+        t_idx, defender = await _pick_target(side, attacker, targets, choose_target)
+        duration = _stun_duration(attacker.skill_potency)
+        defender.stun_turns = max(defender.stun_turns, duration)
+        await emit({"kind": "stun", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                    "target_side": enemy_side, "target_pos": t_idx, "target": defender.name,
+                    "duration": duration,
+                    "text": f"{defender.name}이(가) {duration}턴 동안 무력화됐다."})
+
+    elif effect == "swap":
+        targets = _alive_with_index(decks[enemy_side])
+        if not targets:
+            return
+        t_idx, defender = await _pick_target(side, attacker, targets, choose_target)
+        decks[side][actor_pos], decks[enemy_side][t_idx] = decks[enemy_side][t_idx], decks[side][actor_pos]
+        await emit({"kind": "swap", "actor_side": side, "actor": attacker.name, "actor_pos": actor_pos,
+                    "target_side": enemy_side, "target_pos": t_idx, "target": defender.name,
+                    "text": f"{attacker.name}와(과) {defender.name}의 진영 위치가 뒤바뀌었다!"})
+
+    elif effect == "mp_drain":
+        targets = _alive_with_index(decks[enemy_side])
+        if not targets:
+            return
+        t_idx, defender = await _pick_target(side, attacker, targets, choose_target)
+        drained = round(defender.max_mp * potency)
+        defender.mp = max(0, defender.mp - drained)
+        await emit({"kind": "mp_drain", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                    "target_side": enemy_side, "target_pos": t_idx, "target": defender.name,
+                    "amount": drained, "target_mp": defender.mp, "target_max_mp": defender.max_mp,
+                    "text": f"{defender.name}의 MP를 {drained}만큼 빼앗았다."})
+
+    elif effect == "plague":
+        targets = _alive_with_index(decks[enemy_side])
+        if not targets:
+            return
+        t_idx, defender = await _pick_target(side, attacker, targets, choose_target)
+        defender.plague_turns = PLAGUE_DURATION
+        defender.plague_dmg = max(1, round(defender.max_hp * potency / PLAGUE_DURATION))
+        await emit({"kind": "plague_infect", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+                    "target_side": enemy_side, "target_pos": t_idx, "target": defender.name,
+                    "text": f"{defender.name}에게 역병이 퍼지기 시작했다."})
 
 
-def resolve_duel(card_a: BattleCard, card_b: BattleCard,
-                  side_a: SideState, side_b: SideState, events: list) -> None:
-    events.append({
-        "kind": "duel_start",
-        "a": _card_snapshot(card_a),
-        "b": _card_snapshot(card_b),
-        "text": f"--- {card_a.name}({card_a.hp}hp) vs {card_b.name}({card_b.hp}hp) ---",
-    })
-
-    if card_a.war_stat >= card_b.war_stat:
-        attacker, defender = card_a, card_b
-        atk_side, def_side = side_a, side_b
-        attacker_label = "A"
-    else:
-        attacker, defender = card_b, card_a
-        atk_side, def_side = side_b, side_a
-        attacker_label = "B"
-
-    for _ in range(MAX_TURNS_PER_DUEL):
-        defender_label = "B" if attacker_label == "A" else "A"
-
-        if attacker.mp >= attacker.max_mp:
-            _apply_skill(attacker, defender, attacker_label, atk_side, def_side, events)
-            attacker.mp = 0
-            events[-1]["actor_mp"] = attacker.mp
-            events[-1]["actor_max_mp"] = attacker.max_mp
-        else:
-            hit_chance = min(0.99, BASE_HIT_CHANCE * attacker.acc_mult)
-            if random.random() < hit_chance:
-                atk_val = attacker.effective_atk * atk_side.atk_mult
-                def_val = defender.effective_def * def_side.def_mult
-                dmg = _calc_damage(atk_val, def_val)
-                defender.hp -= dmg
-                events.append({
-                    "kind": "attack",
-                    "actor_side": attacker_label, "actor": attacker.name,
-                    "target_side": defender_label, "target": defender.name, "amount": dmg,
-                    "target_hp": max(defender.hp, 0), "target_max_hp": defender.max_hp,
-                    "text": f"{attacker.name}의 공격! {defender.name}에게 {dmg}의 피해. (HP {max(defender.hp, 0)}/{defender.max_hp})",
-                })
-            else:
-                events.append({
-                    "kind": "miss",
-                    "actor_side": attacker_label, "actor": attacker.name,
-                    "target_side": defender_label, "target": defender.name,
-                    "text": f"{attacker.name}의 공격이 빗나갔다.",
-                })
-            attacker.mp = min(attacker.max_mp, attacker.mp + attacker.mp_gain_per_attack)
-            events[-1]["actor_mp"] = attacker.mp
-            events[-1]["actor_max_mp"] = attacker.max_mp
-
-        if defender.hp <= 0:
-            events.append({
-                "kind": "faint",
-                "side": defender_label, "name": defender.name,
-                "text": f"{defender.name} 쓰러짐!",
+async def _tick_plague(decks: dict, emit) -> None:
+    for side, deck in decks.items():
+        infected = [(i, c) for i, c in enumerate(deck) if c.hp > 0 and c.plague_turns > 0]
+        for i, c in infected:
+            dmg = min(c.plague_dmg, c.hp)
+            c.hp -= dmg
+            c.plague_turns -= 1
+            await emit({
+                "kind": "plague_tick", "side": side, "pos": i, "name": c.name, "amount": dmg,
+                "target_hp": max(c.hp, 0), "target_max_hp": c.max_hp,
+                "text": f"역병으로 {c.name}이(가) {dmg}의 피해를 입었다.",
             })
-            break
+            if c.hp <= 0:
+                await emit({"kind": "faint", "side": side, "pos": i, "name": c.name,
+                            "text": f"{c.name} 쓰러짐!"})
+                continue
 
-        attacker, defender = defender, attacker
-        atk_side, def_side = def_side, atk_side
-        attacker_label = defender_label
-    else:
-        if card_a.hp / card_a.max_hp < card_b.hp / card_b.max_hp:
-            card_a.hp = 0
-            loser_side, loser_name = "A", card_a.name
-        else:
-            card_b.hp = 0
-            loser_side, loser_name = "B", card_b.name
-        events.append({
-            "kind": "faint",
-            "side": loser_side, "name": loser_name,
-            "text": f"제한 턴 도달 - 체력 비율이 낮은 {loser_name} 패배 처리.",
-        })
+            candidates = [j for j, cc in enumerate(deck) if cc.hp > 0 and cc.plague_turns == 0 and j != i]
+            if candidates and random.random() < PLAGUE_SPREAD_CHANCE:
+                j = random.choice(candidates)
+                deck[j].plague_turns = c.plague_turns if c.plague_turns > 0 else PLAGUE_DURATION
+                deck[j].plague_dmg = c.plague_dmg
+                await emit({
+                    "kind": "plague_spread", "side": side, "from_pos": i, "from_name": c.name,
+                    "to_pos": j, "to_name": deck[j].name,
+                    "text": f"역병이 {c.name}에게서 {deck[j].name}(으)로 옮겨붙었다.",
+                })
 
 
-def simulate_deck_battle(deck_a: list[BattleCard], deck_b: list[BattleCard]) -> dict:
-    side_a, side_b = SideState(), SideState()
-    events: list[dict] = []
-    ia, ib = 0, 0
+async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], emit, choose_target) -> dict:
+    """
+    emit(event: dict) -> None (awaitable): 이벤트가 생길 때마다 즉시 호출됨 (실시간 중계용).
+    choose_target(side, actor, targets) -> (idx, BattleCard) (awaitable): 대상이 둘 이상일 때
+      호출됨. 사람 턴이면 웹소켓으로 물어보고, AI 위임이면 알아서 골라서 반환하면 된다.
+    """
+    decks = {"A": deck_a, "B": deck_b}
+    sides = {"A": SideState(), "B": SideState()}
 
-    while ia < len(deck_a) and ib < len(deck_b):
-        card_a, card_b = deck_a[ia], deck_b[ib]
-        resolve_duel(card_a, card_b, side_a, side_b, events)
-        if card_a.hp <= 0:
-            ia += 1
-        if card_b.hp <= 0:
-            ib += 1
-
-    winner = "A" if ib >= len(deck_b) else "B"
-    events.append({
-        "kind": "battle_end",
-        "winner_side": winner,
-        "text": "전투 종료.",
+    await emit({
+        "kind": "battle_start",
+        "deck_a": _deck_snapshot(deck_a), "deck_b": _deck_snapshot(deck_b),
+        "text": "전투 시작!",
     })
 
-    return {
-        "winner": winner,
-        "remaining_a": len(deck_a) - ia,
-        "remaining_b": len(deck_b) - ib,
-        "events": events,
-    }
+    round_no = 0
+    while round_no < MAX_ROUNDS and deck_a and deck_b:
+        if not _alive_with_index(deck_a) or not _alive_with_index(deck_b):
+            break
+        round_no += 1
+        queue = sorted(
+            [("A", c) for _, c in _alive_with_index(deck_a)] + [("B", c) for _, c in _alive_with_index(deck_b)],
+            key=lambda t: t[1].war_stat, reverse=True,
+        )
+        await emit({"kind": "round_start", "round": round_no, "text": f"--- {round_no}라운드 ---"})
+
+        for side, card in queue:
+            if card.hp <= 0:
+                continue
+            enemy_side = "B" if side == "A" else "A"
+            if not _alive_with_index(decks[enemy_side]) or not _alive_with_index(decks[side]):
+                break
+
+            if card.stun_turns > 0:
+                card.stun_turns -= 1
+                await emit({"kind": "stunned", "side": side, "pos": decks[side].index(card), "name": card.name,
+                            "text": f"{card.name}은(는) 무력화 상태라 움직이지 못했다."})
+                continue
+
+            if card.mp >= card.max_mp:
+                await _use_skill(side, card, decks, sides, emit, choose_target)
+                card.mp = 0
+            else:
+                await _basic_attack(side, card, decks, sides, emit, choose_target)
+
+        if not _alive_with_index(deck_a) or not _alive_with_index(deck_b):
+            break
+        await _tick_plague(decks, emit)
+
+    alive_a, alive_b = _alive_with_index(deck_a), _alive_with_index(deck_b)
+    if alive_a and not alive_b:
+        winner = "A"
+    elif alive_b and not alive_a:
+        winner = "B"
+    else:
+        hp_ratio_a = sum(max(c.hp, 0) for c in deck_a) / max(1, sum(c.max_hp for c in deck_a))
+        hp_ratio_b = sum(max(c.hp, 0) for c in deck_b) / max(1, sum(c.max_hp for c in deck_b))
+        winner = "A" if hp_ratio_a >= hp_ratio_b else "B"
+
+    await emit({"kind": "battle_end", "winner_side": winner, "text": "전투 종료."})
+    return {"winner": winner}
