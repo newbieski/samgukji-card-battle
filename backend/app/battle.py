@@ -218,9 +218,11 @@ async def _discord_attack(side: str, card: BattleCard, decks: dict, sides: dict,
     dmg = _calc_damage(card.effective_atk * sides[side].atk_mult,
                        victim.effective_def * sides[side].def_mult, victim.max_hp)
     victim.hp -= dmg
+    card.mp = min(card.max_mp, card.mp + card.mp_gain_per_attack)
     await emit({
         "kind": "discord_attack",
         "actor_side": side, "actor_pos": decks[side].index(card), "actor": card.name,
+        "actor_mp": card.mp, "actor_max_mp": card.max_mp,
         "target_side": side, "target_pos": t_idx, "target": victim.name, "amount": dmg,
         "target_hp": max(victim.hp, 0), "target_max_hp": victim.max_hp,
         "text": f"이간질에 넘어간 {card.name}이(가) 아군 {victim.name}을(를) 공격! "
@@ -229,7 +231,6 @@ async def _discord_attack(side: str, card: BattleCard, decks: dict, sides: dict,
     if victim.hp <= 0:
         await emit({"kind": "faint", "side": side, "pos": t_idx, "name": victim.name,
                     "text": f"{victim.name} 쓰러짐!"})
-    card.mp = min(card.max_mp, card.mp + card.mp_gain_per_attack)
 
 
 async def _pick_target(side: str, actor: BattleCard, targets: list[tuple[int, BattleCard]], choose_target):
@@ -247,6 +248,10 @@ async def _basic_attack(side: str, attacker: BattleCard, decks: dict, sides: dic
         return
     t_idx, defender = await _pick_target(side, attacker, targets, choose_target)
 
+    # MP는 이벤트를 내보내기 전에 올린다. 그래야 이벤트에 실린 actor_mp로
+    # 프론트의 MP 게이지가 이번 공격분까지 반영해서 차오른다.
+    attacker.mp = min(attacker.max_mp, attacker.mp + attacker.mp_gain_per_attack)
+
     hit_chance = min(0.99, BASE_HIT_CHANCE * attacker.acc_mult)
     if random.random() < hit_chance:
         atk_val = attacker.effective_atk * sides[side].atk_mult
@@ -256,6 +261,7 @@ async def _basic_attack(side: str, attacker: BattleCard, decks: dict, sides: dic
         await emit({
             "kind": "attack",
             "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+            "actor_mp": attacker.mp, "actor_max_mp": attacker.max_mp,
             "target_side": enemy_side, "target_pos": t_idx, "target": defender.name, "amount": dmg,
             "target_hp": max(defender.hp, 0), "target_max_hp": defender.max_hp,
             "text": f"{attacker.name}의 공격! {defender.name}에게 {dmg}의 피해. (HP {max(defender.hp, 0)}/{defender.max_hp})",
@@ -269,10 +275,10 @@ async def _basic_attack(side: str, attacker: BattleCard, decks: dict, sides: dic
         await emit({
             "kind": "miss",
             "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+            "actor_mp": attacker.mp, "actor_max_mp": attacker.max_mp,
             "target_side": enemy_side, "target_pos": t_idx, "target": defender.name,
             "text": f"{attacker.name}의 공격이 빗나갔다.",
         })
-    attacker.mp = min(attacker.max_mp, attacker.mp + attacker.mp_gain_per_attack)
 
 
 async def _use_skill(side: str, attacker: BattleCard, decks: dict, sides: dict, emit, choose_target) -> None:
@@ -284,10 +290,15 @@ async def _use_skill(side: str, attacker: BattleCard, decks: dict, sides: dict, 
     own_side, enemy_side_state = sides[side], sides[enemy_side]
     actor_pos = decks[side].index(attacker)
 
+    # MP는 발동 시점에 소모한다. 게이지가 비는 것도 연출의 일부라 skill_cast에 실어 보낸다.
+    # (MP를 회복시키는 스킬이라면 아래에서 다시 채워지고, 그 값은 skill_heal_mp가 알려준다)
+    attacker.mp = 0
+
     effect_text = skill_summary(effect, scope, stat, attacker.skill_potency)
     await emit({
         "kind": "skill_cast",
         "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
+        "actor_mp": attacker.mp, "actor_max_mp": attacker.max_mp,
         "skill_name": attacker.skill_name,
         "skill_effect_type": effect,
         "skill_effect_text": effect_text,
@@ -462,11 +473,12 @@ async def _deathmatch_skill(side: str, fighter: BattleCard, foe_side: str, foe: 
     await emit({
         "kind": "deathmatch_skill",
         "side": side, "name": fighter.name, "skill_name": fighter.skill_name,
+        "actor_mp": fighter.mp, "actor_max_mp": fighter.max_mp,
         "skill_effect_type": effect, "skill_effect_text": effect_text,
         "text": f"{fighter.name}의 '{fighter.skill_name}'!",
     })
 
-    async def strike(multiplier: float, label: str) -> None:
+    async def strike(multiplier: float, label: str, **extra) -> None:
         dmg = _calc_damage(fighter.effective_atk * power * multiplier, foe.effective_def,
                             foe.max_hp, SKILL_DAMAGE_CAP_RATIO)
         foe.hp -= dmg
@@ -476,6 +488,7 @@ async def _deathmatch_skill(side: str, fighter: BattleCard, foe_side: str, foe: 
             "target_side": foe_side, "target": foe.name, "amount": dmg,
             "target_hp": max(foe.hp, 0), "target_max_hp": foe.max_hp,
             "text": f"{label} {foe.name}에게 {dmg}의 피해. (HP {max(foe.hp, 0)}/{foe.max_hp})",
+            **extra,
         })
 
     if effect == "damage":
@@ -507,7 +520,7 @@ async def _deathmatch_skill(side: str, fighter: BattleCard, foe_side: str, foe: 
                     "text": f"{foe.name}이(가) 이간질에 홀렸다! 다음 합에 제 몸을 벤다."})
     elif effect == "mp_drain":
         foe.mp = 0
-        await strike(0.5, "기력을 빼앗으며")
+        await strike(0.5, "기력을 빼앗으며", target_mp=foe.mp, target_max_mp=foe.max_mp)
     elif effect == "plague":
         foe.plague_turns = PLAGUE_DURATION
         foe.plague_dmg = max(1, round(foe.max_hp * potency / PLAGUE_DURATION))
@@ -544,6 +557,9 @@ async def _deathmatch_turn(side: str, fighter: BattleCard, foe_side: str, foe: B
         await _deathmatch_skill(side, fighter, foe_side, foe, power, emit)
         return
 
+    # 팀 전투와 같은 이유로, MP를 먼저 올려 이벤트에 실어 보낸다
+    fighter.mp = min(fighter.max_mp, fighter.mp + fighter.mp_gain_per_attack)
+
     hit_chance = min(0.99, BASE_HIT_CHANCE * fighter.acc_mult)
     if random.random() < hit_chance:
         dmg = _calc_damage(fighter.effective_atk * power, foe.effective_def, foe.max_hp)
@@ -551,15 +567,16 @@ async def _deathmatch_turn(side: str, fighter: BattleCard, foe_side: str, foe: B
         await emit({
             "kind": "deathmatch_attack", "is_skill": False,
             "side": side, "name": fighter.name,
+            "actor_mp": fighter.mp, "actor_max_mp": fighter.max_mp,
             "target_side": foe_side, "target": foe.name, "amount": dmg,
             "target_hp": max(foe.hp, 0), "target_max_hp": foe.max_hp,
             "text": f"{fighter.name}의 공격! {foe.name}에게 {dmg}의 피해. (HP {max(foe.hp, 0)}/{foe.max_hp})",
         })
     else:
         await emit({"kind": "deathmatch_miss", "side": side, "name": fighter.name,
+                    "actor_mp": fighter.mp, "actor_max_mp": fighter.max_mp,
                     "target_side": foe_side, "target": foe.name,
                     "text": f"{fighter.name}의 공격이 빗나갔다."})
-    fighter.mp = min(fighter.max_mp, fighter.mp + fighter.mp_gain_per_attack)
 
 
 async def run_deathmatch(deck_a: list[BattleCard], deck_b: list[BattleCard], emit) -> str:
@@ -749,8 +766,7 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
                 action = await choose_action(side, card)
 
         if action == "skill" and card.mp >= card.max_mp:
-            await _use_skill(side, card, decks, sides, emit, choose_target)
-            card.mp = 0
+            await _use_skill(side, card, decks, sides, emit, choose_target)  # MP 소모는 _use_skill 안에서
         else:
             # 스킬을 아끼기로 했으면 MP는 그대로 둔다 (다음 차례에 다시 쓸 수 있게)
             await _basic_attack(side, card, decks, sides, emit, choose_target)

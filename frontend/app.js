@@ -814,18 +814,23 @@ function appendLogLine(text, cls) {
 }
 
 function applyEventToState(ev) {
+  // MP는 종류를 가리지 않고 이벤트에 실려 오는 값으로 맞춘다.
+  // (공격할 때마다 차오르고 스킬을 쓰면 0이 되는 게 이걸로 보인다)
+  if (ev.actor_mp !== undefined) {
+    const a = getBattleCard(ev.actor_side, ev.actor_pos);
+    if (a) a.mp = ev.actor_mp;
+  }
+  if (ev.target_mp !== undefined) {
+    const t = getBattleCard(ev.target_side, ev.target_pos);
+    if (t) t.mp = ev.target_mp;
+  }
+
   switch (ev.kind) {
     case "attack":
     case "skill_damage":
     case "skill_heal": {
       const t = getBattleCard(ev.target_side, ev.target_pos);
       if (t) t.hp = ev.target_hp;
-      break;
-    }
-    case "skill_heal_mp":
-    case "mp_drain": {
-      const t = getBattleCard(ev.target_side, ev.target_pos);
-      if (t) t.mp = ev.target_mp;
       break;
     }
     case "stun": {
@@ -1039,6 +1044,16 @@ function dmPopup(side, text, kind) {
 }
 
 function applyDeathmatchEvent(ev) {
+  // 팀 전투와 같이, MP 변화는 이벤트에 실려 온 값으로 맞춘다
+  if (ev.actor_mp !== undefined && deathmatch.fighters[ev.side]) {
+    deathmatch.fighters[ev.side].mp = ev.actor_mp;
+    renderDeathmatchFighter(ev.side);
+  }
+  if (ev.target_mp !== undefined && deathmatch.fighters[ev.target_side]) {
+    deathmatch.fighters[ev.target_side].mp = ev.target_mp;
+    renderDeathmatchFighter(ev.target_side);
+  }
+
   switch (ev.kind) {
     case "deathmatch_start":
       deathmatch.fighters.A = { ...ev.a };
