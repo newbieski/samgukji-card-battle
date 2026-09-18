@@ -13,7 +13,7 @@ placeholder이며, 실제 밸런스는 BASE_STATS / RARITY_WEIGHT / ARCHETYPES �
 스탯 순서: hp, mp, atk, int_stat(지력), war_stat(무력), leadership(통솔력), charm(매력), politics(정치력)
 
 고유 스킬은 설명 텍스트와 별개로 전투 엔진이 실제로 해석하는 9가지 효과로 단순화했다.
-앞의 4개(damage/heal/buff/debuff)는 무력/통솔력 기반, 뒤의 5개(extra_turn/stun/swap/
+앞의 4개(damage/heal/buff/debuff)는 무력/통솔력 기반, 뒤의 5개(extra_turn/stun/discord/
 mp_drain/plague)는 원래 전투에 안 쓰이던 지력/매력/정치력 컨셉을 살리려고 추가한
 효과다:
   - damage:     대상에게 추가 피해 (scope=enemy는 단일, enemy_team은 다단히트로 해석)
@@ -22,7 +22,8 @@ mp_drain/plague)는 원래 전투에 안 쓰이던 지력/매력/정치력 컨�
   - debuff:     적 단일/적 팀 전체의 능력치 하락 (stat: atk|def|acc)
   - extra_turn: 이 스킬을 쓴 직후 곧바로 기본 공격을 한 번 더 한다 (scope=self)
   - stun:       적 단일 대상을 최대 3턴간 행동 불가로 만든다 (potency로 1~3턴 결정)
-  - swap:       나와 적 단일 대상의 진영 위치를 서로 바꾼다 (소유권은 그대로, scope=enemy)
+  - discord:    적 단일 대상을 이간질해, 그 카드가 자기 차례에 같은 편을 공격하게 만든다
+                (일기토처럼 때릴 아군이 없으면 혼란에 빠져 자신을 친다, scope=enemy)
   - mp_drain:   적 단일 대상의 MP를 potency%만큼 빼앗는다 (stat: mp)
   - plague:     적 단일 대상을 감염시켜 매 라운드 피해를 입히고, 같은 편 다른 카드에게
                 확률적으로 옮겨붙는다 (scope=enemy)
@@ -115,8 +116,8 @@ GENERALS = [
      "buff", "self", "def"),
     ("손책", "오", "무력형", "소패왕의 위엄", "적 단일 대상에게 큰 피해를 입히고 적 전체를 위축시킨다.",
      "damage", "enemy", None),
-    ("초선", "군웅", "매력형", "연환계", "적 하나를 꾀어내 진영 위치를 아군 카드와 통째로 맞바꾼다.",
-     "swap", "enemy", None),
+    ("초선", "군웅", "매력형", "연환계", "적 하나를 이간질해, 다음 차례에 적군끼리 서로 칼을 겨누게 만든다.",
+     "discord", "enemy", None),
 
     ("황충", "촉", "무력형", "노장의 활", "적 단일 대상을 확정 치명타로 저격한다.",
      "damage", "enemy", None),

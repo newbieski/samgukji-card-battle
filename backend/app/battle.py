@@ -15,7 +15,7 @@
 - 고유 스킬은 9가지 효과로 단순화되어 있다:
     damage/heal/buff/debuff (기존) +
     extra_turn(자기 턴을 한 번 더) / stun(최대 3턴 무력화) /
-    swap(적 카드와 진영 위치 교체) / mp_drain(적 MP 감소) /
+    discord(이간계 - 적이 같은 편을 치게 만듦) / mp_drain(적 MP 감소) /
     plague(적 하나를 감염시켜 매 라운드 피해 + 같은 편으로 전염)
   (자세한 배경은 seed_data.py 상단 주석 참고)
 
@@ -55,7 +55,7 @@ class BattleCard:
     name: str
     rarity: str
     skill_name: str
-    skill_effect_type: str   # damage | heal | buff | debuff | extra_turn | stun | swap | mp_drain | plague
+    skill_effect_type: str   # damage | heal | buff | debuff | extra_turn | stun | discord | mp_drain | plague
     skill_scope: str         # enemy | enemy_team | self | team
     skill_stat: str | None   # atk | def | acc | hp | mp | None
     skill_potency: int
@@ -73,6 +73,7 @@ class BattleCard:
     stun_turns: int = field(default=0, init=False)
     plague_turns: int = field(default=0, init=False)
     plague_dmg: int = field(default=0, init=False)
+    discord_turns: int = field(default=0, init=False)  # 이간계 - 남은 동안 같은 편을 친다
 
     def __post_init__(self):
         self.hp = self.max_hp
@@ -154,8 +155,8 @@ def skill_summary(effect_type: str, scope: str, stat: str | None, potency: int) 
         return "곧바로 한 번 더 행동"
     if effect_type == "stun":
         return f"{target} {_stun_duration(potency)}턴 무력화"
-    if effect_type == "swap":
-        return f"{target}와 진영 위치 교체"
+    if effect_type == "discord":
+        return f"{target}를 이간질 - 같은 편을 공격하게 만듦"
     if effect_type == "mp_drain":
         return f"{target} MP {potency}% 흡수"
     if effect_type == "plague":
@@ -179,6 +180,7 @@ def card_snapshot(card: BattleCard) -> dict:
         ),
         "stunned": card.stun_turns > 0,
         "infected": card.plague_turns > 0,
+        "discorded": card.discord_turns > 0,
     }
 
 
@@ -197,6 +199,37 @@ def _stun_duration(potency_pct: int) -> int:
     if potency_pct >= 36:
         return 2
     return 1
+
+
+def _discord_duration(potency_pct: int) -> int:
+    """이간계 지속. 턴을 통째로 뒤집는 효과라 무력화보다 짧게 잡는다."""
+    return 2 if potency_pct >= 58 else 1
+
+
+async def _discord_attack(side: str, card: BattleCard, decks: dict, sides: dict, emit) -> None:
+    """이간계에 넘어간 카드가 자기 차례에 같은 편을 공격한다."""
+    allies = [(i, c) for i, c in _alive_with_index(decks[side]) if c is not card]
+    if not allies:
+        await emit({"kind": "discord_wasted", "side": side, "pos": decks[side].index(card), "name": card.name,
+                    "text": f"{card.name}은(는) 이간질에 휘둘렸지만 벨 아군이 없었다."})
+        return
+
+    t_idx, victim = random.choice(allies)
+    dmg = _calc_damage(card.effective_atk * sides[side].atk_mult,
+                       victim.effective_def * sides[side].def_mult, victim.max_hp)
+    victim.hp -= dmg
+    await emit({
+        "kind": "discord_attack",
+        "actor_side": side, "actor_pos": decks[side].index(card), "actor": card.name,
+        "target_side": side, "target_pos": t_idx, "target": victim.name, "amount": dmg,
+        "target_hp": max(victim.hp, 0), "target_max_hp": victim.max_hp,
+        "text": f"이간질에 넘어간 {card.name}이(가) 아군 {victim.name}을(를) 공격! "
+                f"{dmg}의 피해. (HP {max(victim.hp, 0)}/{victim.max_hp})",
+    })
+    if victim.hp <= 0:
+        await emit({"kind": "faint", "side": side, "pos": t_idx, "name": victim.name,
+                    "text": f"{victim.name} 쓰러짐!"})
+    card.mp = min(card.max_mp, card.mp + card.mp_gain_per_attack)
 
 
 async def _pick_target(side: str, actor: BattleCard, targets: list[tuple[int, BattleCard]], choose_target):
@@ -381,15 +414,18 @@ async def _use_skill(side: str, attacker: BattleCard, decks: dict, sides: dict, 
                     "duration": duration,
                     "text": f"{defender.name}이(가) {duration}턴 동안 무력화됐다."})
 
-    elif effect == "swap":
+    elif effect == "discord":
         targets = _alive_with_index(decks[enemy_side])
         if not targets:
             return
         t_idx, defender = await _pick_target(side, attacker, targets, choose_target)
-        decks[side][actor_pos], decks[enemy_side][t_idx] = decks[enemy_side][t_idx], decks[side][actor_pos]
-        await emit({"kind": "swap", "actor_side": side, "actor": attacker.name, "actor_pos": actor_pos,
+        duration = _discord_duration(attacker.skill_potency)
+        defender.discord_turns = max(defender.discord_turns, duration)
+        await emit({"kind": "discord", "actor_side": side, "actor_pos": actor_pos, "actor": attacker.name,
                     "target_side": enemy_side, "target_pos": t_idx, "target": defender.name,
-                    "text": f"{attacker.name}와(과) {defender.name}의 진영 위치가 뒤바뀌었다!"})
+                    "duration": duration,
+                    "text": f"{defender.name}이(가) 이간질에 넘어갔다! "
+                            f"{duration}턴 동안 같은 편에게 칼을 겨눈다."})
 
     elif effect == "mp_drain":
         targets = _alive_with_index(decks[enemy_side])
@@ -464,10 +500,11 @@ async def _deathmatch_skill(side: str, fighter: BattleCard, foe_side: str, foe: 
         foe.stun_turns = max(foe.stun_turns, 1)
         await emit({"kind": "deathmatch_stun", "side": foe_side, "name": foe.name,
                     "text": f"{foe.name}이(가) 다음 합을 놓친다!"})
-    elif effect == "swap":
-        foe.acc_mult *= (1 - potency)
+    elif effect == "discord":
+        # 일기토엔 벨 아군이 없으니, 혼란에 빠져 다음 합에 제 몸을 친다
+        foe.discord_turns = max(foe.discord_turns, 1)
         await emit({"kind": "deathmatch_debuff", "side": foe_side, "name": foe.name,
-                    "text": f"{foe.name}이(가) 교란당했다. (명중률 하락)"})
+                    "text": f"{foe.name}이(가) 이간질에 홀렸다! 다음 합에 제 몸을 벤다."})
     elif effect == "mp_drain":
         foe.mp = 0
         await strike(0.5, "기력을 빼앗으며")
@@ -486,6 +523,20 @@ async def _deathmatch_turn(side: str, fighter: BattleCard, foe_side: str, foe: B
         fighter.stun_turns -= 1
         await emit({"kind": "deathmatch_stunned", "side": side, "name": fighter.name,
                     "text": f"{fighter.name}은(는) 움직이지 못했다."})
+        return
+
+    if fighter.discord_turns > 0:
+        fighter.discord_turns -= 1
+        dmg = _calc_damage(fighter.effective_atk * power * 0.6, fighter.effective_def, fighter.max_hp)
+        fighter.hp -= dmg
+        await emit({
+            "kind": "deathmatch_attack", "is_skill": False,
+            "side": side, "name": fighter.name,
+            "target_side": side, "target": fighter.name, "amount": dmg,
+            "target_hp": max(fighter.hp, 0), "target_max_hp": fighter.max_hp,
+            "text": f"이간질에 홀린 {fighter.name}이(가) 제 몸을 베었다! {dmg}의 피해. "
+                    f"(HP {max(fighter.hp, 0)}/{fighter.max_hp})",
+        })
         return
 
     if fighter.mp >= fighter.max_mp:
@@ -671,6 +722,9 @@ async def run_team_battle(deck_a: list[BattleCard], deck_b: list[BattleCard], em
             card.stun_turns -= 1
             await emit({"kind": "stunned", "side": side, "pos": decks[side].index(card), "name": card.name,
                         "text": f"{card.name}은(는) 무력화 상태라 움직이지 못했다."})
+        elif card.discord_turns > 0:
+            card.discord_turns -= 1
+            await _discord_attack(side, card, decks, sides, emit)
         elif card.mp >= card.max_mp:
             await _use_skill(side, card, decks, sides, emit, choose_target)
             card.mp = 0

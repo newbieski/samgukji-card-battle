@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS generals (
     skill_description TEXT NOT NULL,
     skill_effect_type TEXT NOT NULL CHECK (skill_effect_type IN (
         'damage', 'heal', 'buff', 'debuff',
-        'extra_turn', 'stun', 'swap', 'mp_drain', 'plague'
+        'extra_turn', 'stun', 'discord', 'mp_drain', 'plague'
     )),
     skill_scope TEXT NOT NULL CHECK (skill_scope IN ('enemy', 'enemy_team', 'self', 'team')),
     skill_stat TEXT CHECK (skill_stat IN ('atk', 'def', 'acc', 'hp', 'mp'))

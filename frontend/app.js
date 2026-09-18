@@ -419,7 +419,7 @@ const SKILL_ROLES = {
   debuff:     { icon: "🔻", label: "방해형" },
   extra_turn: { icon: "⚡", label: "속공형" },
   stun:       { icon: "💫", label: "제압형" },
-  swap:       { icon: "🔄", label: "교란형" },
+  discord:    { icon: "🔀", label: "이간형" },
   mp_drain:   { icon: "🌀", label: "탈취형" },
   plague:     { icon: "☠️", label: "역병형" },
 };
@@ -633,6 +633,7 @@ function cardSlotHtml(side, pos, card) {
   const badges = [
     card.stunned ? `<span class="status-badge" title="무력화">💫</span>` : "",
     card.infected ? `<span class="status-badge" title="역병">☠️</span>` : "",
+    card.discorded ? `<span class="status-badge" title="이간 - 같은 편을 공격한다">🔀</span>` : "",
   ].join("");
   const acting = !dead && battle.currentActor
     && battle.currentActor.side === side && battle.currentActor.pos === pos;
@@ -663,7 +664,7 @@ function renderDeckColumn(side) {
 
 const FLASH_CLASSES = [
   "flash-hit", "flash-skill-hit", "flash-heal", "flash-buff", "flash-debuff",
-  "flash-miss", "flash-lunge-down", "flash-lunge-up", "flash-faint", "flash-swap",
+  "flash-miss", "flash-lunge-down", "flash-lunge-up", "flash-faint",
 ];
 
 function battleCardEl(side, pos) {
@@ -783,11 +784,16 @@ function applyEventToState(ev) {
       if (t) t.stunned = true;
       break;
     }
-    case "swap": {
-      const a = battle.decks[ev.actor_side][ev.actor_pos];
-      const b = battle.decks[ev.target_side][ev.target_pos];
-      battle.decks[ev.actor_side][ev.actor_pos] = b;
-      battle.decks[ev.target_side][ev.target_pos] = a;
+    case "discord": {
+      const t = getBattleCard(ev.target_side, ev.target_pos);
+      if (t) t.discorded = true;
+      break;
+    }
+    case "discord_attack": {
+      const t = getBattleCard(ev.target_side, ev.target_pos);
+      if (t) t.hp = ev.target_hp;
+      const actor = getBattleCard(ev.actor_side, ev.actor_pos);
+      if (actor) actor.discorded = false;
       break;
     }
     case "plague_infect": {
@@ -892,10 +898,18 @@ function playEventEffects(ev) {
       spawnPopup(ev.target_side, ev.target_pos, `MP -${ev.amount}`, "mp");
       break;
 
-    case "swap":
-      flashSlot(ev.actor_side, ev.actor_pos, "swap");
-      flashSlot(ev.target_side, ev.target_pos, "swap");
+    case "discord":
+      spawnFx(ev.target_side, ev.target_pos, "fx-debuff");
+      spawnPopup(ev.target_side, ev.target_pos, "🔀 이간", "debuff");
       flareStage();
+      break;
+
+    case "discord_attack":
+      lungeToward(ev.actor_side, ev.actor_pos);
+      flashSlot(ev.target_side, ev.target_pos, "hit");
+      spawnSlash(ev.target_side, ev.target_pos);
+      spawnPopup(ev.target_side, ev.target_pos, `-${ev.amount}`, "damage");
+      shakeStage();
       break;
 
     case "plague_infect":
