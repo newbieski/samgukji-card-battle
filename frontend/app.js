@@ -576,6 +576,7 @@ const battle = {
   playing: false,
   fastForward: false,
   catchUp: 0,                // 선택 직전, 텀 없이 몰아 재생할 밀린 이벤트 수
+  promptTurn: null,          // {side, name} - 선택창이 떠 있는 동안의 "지금 차례"
   targetContext: null,       // {mode:"actor"|"target", ...} - 내가 카드를 골라야 할 때
   pendingResult: null,       // 재생이 끝나면 띄울 전투 결과
   playerNames: { A: "A팀", B: "B팀" },
@@ -617,6 +618,7 @@ function resetBattleUI() {
   battle.playing = false;
   battle.fastForward = false;
   battle.catchUp = 0;
+  battle.promptTurn = null;
   battle.pendingResult = null;
   battle.currentActor = null;
   clearTargetPrompt();
@@ -1150,7 +1152,9 @@ function applyBattleEvent(ev) {
     if (ev.names) battle.playerNames = ev.names;
   } else if (ev.kind === "turn_start") {
     battle.currentActor = { side: ev.side, pos: ev.pos };
-    showTurnIndicator(ev.side, ev.name);
+    // 선택창이 떠 있으면 "지금 고르고 있는 차례"가 우선이다. 밀려 있던 지난 차례의
+    // turn_start가 뒤늦게 재생되면서 내 차례를 상대 이름으로 덮어쓰면 안 된다.
+    if (!battle.promptTurn) showTurnIndicator(ev.side, ev.name);
   } else {
     // 방금 행동한 카드는 더 이상 무력화 상태가 아니다 (스턴이 그새 풀렸으니까 움직인 것)
     if (ev.actor_side !== undefined && ev.actor_pos !== undefined) {
@@ -1168,6 +1172,8 @@ function applyBattleEvent(ev) {
   // 선택 대기 안내도 전용 안내줄이 따로 있어서 로그까지 채우면 시끄럽기만 하다.
   if (ev.kind === "waiting_choice") {
     document.getElementById("battleEventText").textContent = ev.text;
+    // 고르는 쪽이 아닌 상대 화면에서도 누구 차례인지는 맞게 보여준다
+    if (ev.side && !battle.promptTurn) showTurnIndicator(ev.side, ev.actor ?? "장수 선택 중");
   } else if (ev.kind !== "turn_start") {
     appendLogLine(ev.text, ev.kind === "round_start" ? "round-line" : "event-line");
     if (ev.kind !== "battle_start") {
@@ -1205,8 +1211,17 @@ function highlightTargets() {
   });
 }
 
+// 선택창이 뜨는 동안 차례 표시를 "지금 고르는 쪽"으로 맞춘다. 장수를 고르기 전에는
+// 아직 turn_start가 오지 않아서, 이게 없으면 직전 차례(상대 이름)가 그대로 남는다.
+function markPromptTurn(side, actorName) {
+  if (!side) return;
+  battle.promptTurn = { side, name: actorName ?? "장수 선택 중" };
+  showTurnIndicator(side, battle.promptTurn.name);
+}
+
 function clearTargetPrompt() {
   battle.targetContext = null;
+  battle.promptTurn = null;
   document.getElementById("targetPrompt").classList.add("hidden");
   document.querySelectorAll(".battle-card.targetable").forEach((el) => {
     el.classList.remove("targetable");
@@ -1224,6 +1239,7 @@ function sendPick(pos) {
 
 function showPickPrompt(mode, data) {
   catchUpBattleQueue();
+  markPromptTurn(data.side, mode === "target" ? data.actor : null);
   battle.targetContext = { ...data, mode };
   const prompt = document.getElementById("targetPrompt");
   prompt.textContent =
@@ -1233,6 +1249,7 @@ function showPickPrompt(mode, data) {
 }
 
 function clearActionPrompt() {
+  battle.promptTurn = null;
   document.getElementById("actionPrompt").classList.add("hidden");
 }
 
@@ -1244,6 +1261,7 @@ function sendAction(action) {
 // MP가 다 찬 장수는 스킬을 쓸지, 아껴두고 일반 공격을 할지 고를 수 있다.
 function showActionPrompt(data) {
   catchUpBattleQueue();
+  markPromptTurn(data.side, data.actor?.name);
   const role = skillRole(data.skill_effect_type);
   document.getElementById("actionPromptText").innerHTML =
     `<b>${data.actor?.name ?? ""}</b>의 MP가 가득 찼습니다 — ` +

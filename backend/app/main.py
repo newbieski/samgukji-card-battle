@@ -461,20 +461,24 @@ async def _maybe_run_battle(room: Room) -> None:
         async def emit(event: dict) -> None:
             await _broadcast(room, {"type": "battle_event", **event})
 
-        async def ask(player, prompt: dict, waiting_text: str):
+        async def ask(player, side: str, prompt: dict, waiting_text: str, actor_name=None):
             """사람에게 물어보고 답을 받아온다. AI 위임/타임아웃/오류면 None을 돌려준다.
 
             전투 중에 위임으로 바꾸면 기다리던 질문이 즉시 None으로 풀려 AI가 대신 정한다.
+            질문에는 지금이 누구 차례인지(side)를 같이 실어 보낸다. 장수를 고르기 전에는
+            아직 turn_start가 나가지 않아서, 이게 없으면 양쪽 화면의 차례 표시가
+            직전 차례에 머물러 있다.
             """
             if player.auto_target or player.websocket is None:
                 return None
 
-            await emit({"kind": "waiting_choice",
+            await emit({"kind": "waiting_choice", "side": side, "actor": actor_name,
                         "text": f"{waiting_text} (최대 {TARGET_TIMEOUT_SEC}초)"})
             future = asyncio.get_running_loop().create_future()
             player.pending_target = future
             try:
-                await player.websocket.send_json({**prompt, "timeout_sec": TARGET_TIMEOUT_SEC})
+                await player.websocket.send_json({
+                    **prompt, "side": side, "timeout_sec": TARGET_TIMEOUT_SEC})
                 return await asyncio.wait_for(future, timeout=TARGET_TIMEOUT_SEC)
             except Exception:
                 return None
@@ -485,7 +489,7 @@ async def _maybe_run_battle(room: Room) -> None:
             """이번 차례에 내보낼 장수를 고른다. 자동이면 무력이 가장 높은 카드."""
             player = players_by_side[side]
             answer = await ask(
-                player,
+                player, side,
                 {"type": "await_actor",
                  "candidates": [{**card_snapshot(c), "side": side, "pos": idx} for idx, c in candidates]},
                 "행동할 장수 선택을 기다리는 중...",
@@ -499,7 +503,7 @@ async def _maybe_run_battle(room: Room) -> None:
             """MP가 다 찼을 때 스킬을 쓸지 아껴둘지. 자동이면 그냥 쓴다."""
             player = players_by_side[side]
             answer = await ask(
-                player,
+                player, side,
                 {"type": "await_action",
                  "actor": {**card_snapshot(card), "side": side, "pos": decks_by_side[side].index(card)},
                  "skill_name": card.skill_name,
@@ -507,6 +511,7 @@ async def _maybe_run_battle(room: Room) -> None:
                  "skill_effect_text": skill_summary(card.skill_effect_type, card.skill_scope,
                                                     card.skill_stat, card.skill_potency)},
                 f"{card.name}의 행동 선택을 기다리는 중...",
+                actor_name=card.name,
             )
             return "attack" if answer == "attack" else "skill"
 
@@ -514,11 +519,12 @@ async def _maybe_run_battle(room: Room) -> None:
             player = players_by_side[side]
             enemy_side = "B" if side == "A" else "A"
             answer = await ask(
-                player,
+                player, side,
                 {"type": "await_target",
                  "actor": actor.name,
                  "targets": [{**card_snapshot(c), "side": enemy_side, "pos": idx} for idx, c in targets]},
                 f"{actor.name}의 대상 선택을 기다리는 중...",
+                actor_name=actor.name,
             )
             for idx, c in targets:
                 if idx == answer:
