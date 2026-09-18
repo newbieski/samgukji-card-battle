@@ -37,12 +37,20 @@
   <section id="screen-entry" class="screen">
     <div class="panel">
       <div class="mode-tabs">
+        <button id="tabModeScenario" class="mode-tab">시나리오</button>
         <button id="tabModeSingle" class="mode-tab">싱글 플레이</button>
         <button id="tabModeMulti" class="mode-tab">멀티플레이</button>
       </div>
 
       <label>닉네임</label>
       <input id="nicknameInput" type="text" maxlength="12" placeholder="닉네임을 입력하세요">
+
+      <div id="scenarioModeBox">
+        <p class="hint">역사의 전장 12곳을 Lv1부터 Lv5까지 차례로 돌파합니다.</p>
+        <div class="btn-row">
+          <button id="btnStartScenario" class="btn btn-primary">원정 시작</button>
+        </div>
+      </div>
 
       <div id="singleModeBox">
         <p class="hint">AI 상대와 바로 연습 대결을 시작합니다.</p>
@@ -102,6 +110,53 @@
     </div>
   </section>
 
+  <!-- 시나리오: 전투 12개 목록 -->
+  <section id="screen-scenario" class="screen hidden">
+    <div class="panel wide">
+      <h2>원정</h2>
+      <p class="hint">전투를 골라 들어가세요. 각 전투 안에서는 Lv1을 깨야 다음 레벨이 열립니다.</p>
+      <div id="scenarioGrid" class="scenario-grid"></div>
+      <div class="btn-row">
+        <button id="btnScenarioCards" class="btn">뽑기 / 덱 편성</button>
+        <button id="btnScenarioExit" class="btn">나가기</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 시나리오: 레벨 선택 + 덱 선택 -->
+  <section id="screen-scenario-stage" class="screen hidden">
+    <div class="panel wide">
+      <h2 id="stageTitle">전투</h2>
+      <p id="stageIntro" class="stage-intro"></p>
+
+      <div id="stageLevels" class="stage-levels"></div>
+
+      <div id="stageDetail" class="stage-detail hidden">
+        <div class="stage-lineups">
+          <div>
+            <div class="stage-lineup-label">적 진용</div>
+            <div id="stageEnemy" class="stage-lineup"></div>
+          </div>
+          <div>
+            <div class="stage-lineup-label">고정덱 (이 전투의 주역)</div>
+            <div id="stageFixed" class="stage-lineup"></div>
+          </div>
+        </div>
+
+        <div id="stageRewards" class="stage-rewards"></div>
+
+        <div class="btn-row">
+          <button id="btnStageOwn" class="btn btn-primary">내 덱으로 도전</button>
+          <button id="btnStageFixed" class="btn">고정덱으로 도전</button>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button id="btnStageBack" class="btn">전투 목록으로</button>
+      </div>
+    </div>
+  </section>
+
   <!-- 뽑기 + 카드 보관함/덱 편성 (한 화면) -->
   <section id="screen-cards" class="screen hidden">
     <div class="panel wide">
@@ -126,6 +181,7 @@
         <div id="multiDrawGrid" class="multi-draw-grid"></div>
       </div>
 
+      <p id="deckHint" class="deck-hint hidden"></p>
       <p class="hint">덱으로 쓸 장수 5명을 선택하세요 (<span id="deckCount">0</span>/5)</p>
       <div id="cardGrid" class="card-grid"></div>
 

@@ -630,6 +630,150 @@ input[type="text"] {
   animation: skill-ready-pulse 1s ease-in-out infinite;
 }
 
+/* ---------------------------------------------------------------------------
+   시나리오(원정) 화면
+   --------------------------------------------------------------------------- */
+
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.scenario-tile {
+  position: relative;
+  cursor: pointer;
+  border: 3px solid var(--panel-border);
+  background-size: cover;
+  background-position: center;
+  image-rendering: pixelated;
+  min-height: 110px;
+  transition: transform 0.12s, border-color 0.12s;
+}
+
+.scenario-tile:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+}
+
+.scenario-tile-body {
+  padding: 10px;
+  background: linear-gradient(180deg, rgba(11, 6, 32, 0.45), rgba(11, 6, 32, 0.9));
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 5px;
+  min-height: 110px;
+  box-sizing: border-box;
+}
+
+.scenario-tile-year { font-size: 8px; color: #b3a7e0; }
+.scenario-tile-name { font-size: 11px; }
+.scenario-tile-progress { font-size: 9px; color: var(--accent); }
+.scenario-tile-progress.complete { text-shadow: 0 0 8px var(--accent); }
+
+.stage-intro {
+  font-size: 9px;
+  line-height: 1.9;
+  color: #cfc4f0;
+  margin-bottom: 12px;
+}
+
+.stage-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.stage-level {
+  font-family: inherit;
+  cursor: pointer;
+  min-width: 78px;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--text);
+  background: #1a1030;
+  border: 3px solid var(--panel-border);
+}
+
+.stage-level-no { font-size: 11px; }
+.stage-level-mark { font-size: 10px; min-height: 12px; color: var(--accent); }
+.stage-level:hover:not(:disabled) { border-color: var(--accent); }
+.stage-level.cleared { border-color: #4fd18b; }
+.stage-level.picked { border-color: var(--accent); box-shadow: 0 0 12px var(--accent); }
+.stage-level.locked { opacity: 0.45; cursor: not-allowed; }
+
+.stage-detail {
+  padding: 12px;
+  margin-bottom: 12px;
+  background: rgba(11, 6, 32, 0.6);
+  border: 2px solid var(--panel-border);
+}
+
+.stage-lineups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.stage-lineup-label { font-size: 9px; color: #b3a7e0; margin-bottom: 6px; }
+.stage-lineup { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.stage-card {
+  width: 62px;
+  padding: 4px;
+  text-align: center;
+  background: #140c29;
+  border: 2px solid var(--panel-border);
+}
+
+.stage-card img {
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: #0b0620;
+}
+
+.stage-card-name {
+  font-size: 7px;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stage-card-rarity { font-size: 7px; color: var(--accent); }
+
+.stage-rewards {
+  font-size: 9px;
+  line-height: 1.8;
+  margin-bottom: 12px;
+  padding: 8px;
+  background: #140c29;
+  border-left: 3px solid var(--accent);
+}
+
+.first-clear-tag { color: var(--accent); font-size: 8px; }
+.hint-inline { color: #8a7bc4; font-size: 8px; }
+
+.deck-hint {
+  font-size: 9px;
+  line-height: 1.8;
+  padding: 8px;
+  margin-bottom: 8px;
+  color: var(--accent);
+  background: #140c29;
+  border: 2px solid var(--accent);
+}
+
 /* 고를 수 있는 카드에만 펼쳐지는 스킬 효과 설명 */
 @keyframes detail-open {
   from { opacity: 0; transform: translateY(-4px); }

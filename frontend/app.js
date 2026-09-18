@@ -8,6 +8,8 @@ const state = {
   selectedDeck: [],
   ws: null,
   autoTarget: false,   // 전투 중 선택을 AI에게 맡겼는지 (로비 체크박스 = 전투 중 버튼)
+  mode: "multi",       // "scenario" | "single" | "multi" - 전투가 끝나고 어디로 돌아갈지
+  scenario: null,      // {battles, battle, level, deckMode} - 시나리오 진행 중일 때
 };
 
 function showScreen(name) {
@@ -51,17 +53,22 @@ async function refreshRings() {
 // 싱글/멀티 모드 선택
 // ---------------------------------------------------------------------------
 
+const ENTRY_MODES = ["scenario", "single", "multi"];
+
 function setEntryMode(mode) {
-  document.getElementById("tabModeSingle").classList.toggle("active", mode === "single");
-  document.getElementById("tabModeMulti").classList.toggle("active", mode === "multi");
-  document.getElementById("singleModeBox").classList.toggle("hidden", mode !== "single");
-  document.getElementById("multiModeBox").classList.toggle("hidden", mode !== "multi");
+  ENTRY_MODES.forEach((m) => {
+    const tab = m[0].toUpperCase() + m.slice(1);
+    document.getElementById(`tabMode${tab}`).classList.toggle("active", m === mode);
+    document.getElementById(`${m}ModeBox`).classList.toggle("hidden", m !== mode);
+  });
   document.getElementById("entryError").textContent = "";
 }
 
-document.getElementById("tabModeSingle").addEventListener("click", () => setEntryMode("single"));
-document.getElementById("tabModeMulti").addEventListener("click", () => setEntryMode("multi"));
-setEntryMode("single");
+ENTRY_MODES.forEach((m) => {
+  const tab = m[0].toUpperCase() + m.slice(1);
+  document.getElementById(`tabMode${tab}`).addEventListener("click", () => setEntryMode(m));
+});
+setEntryMode("scenario");
 
 document.getElementById("btnStartSingle").addEventListener("click", async () => {
   const nickname = document.getElementById("nicknameInput").value.trim();
@@ -77,7 +84,31 @@ document.getElementById("btnStartSingle").addEventListener("click", async () => 
       body: JSON.stringify({ nickname, title: `${nickname}의 연습 대결` }),
     });
     await api(`/rooms/${res.room_code}/ai_opponent`, { method: "POST" });
+    state.mode = "single";
     enterRoom(res);
+  } catch (e) {
+    errorEl.textContent = e.message;
+  }
+});
+
+// 시나리오도 방 하나를 쓴다. 전투/선택창/위임/일기토를 그대로 재사용하기 위해서다.
+// 이 방의 웹소켓은 원정이 끝날 때까지 열어둔다 - 끊기면 서버가 방에서 빼버린다.
+document.getElementById("btnStartScenario").addEventListener("click", async () => {
+  const nickname = document.getElementById("nicknameInput").value.trim();
+  const errorEl = document.getElementById("entryError");
+  errorEl.textContent = "";
+  if (!nickname) {
+    errorEl.textContent = "닉네임을 입력하세요.";
+    return;
+  }
+  try {
+    const res = await api("/rooms", {
+      method: "POST",
+      body: JSON.stringify({ nickname, title: `${nickname}의 원정` }),
+    });
+    state.mode = "scenario";
+    enterRoom(res);
+    await openScenarioList();
   } catch (e) {
     errorEl.textContent = e.message;
   }
@@ -137,6 +168,144 @@ function enterRoom(res) {
   document.getElementById("roomTitleLabel").textContent = res.title ?? "";
   showScreen("lobby");
 }
+
+// ---------------------------------------------------------------------------
+// 시나리오 (원정) - 전투 12개 x Lv1~5
+// ---------------------------------------------------------------------------
+
+const MAX_STAGE_LEVEL = 5;
+
+async function openScenarioList() {
+  const data = await api(`/scenario/battles?player_id=${state.playerId}`);
+  state.scenario = { ...(state.scenario ?? {}), battles: data.battles };
+  renderScenarioGrid();
+  showScreen("scenario");
+}
+
+function renderScenarioGrid() {
+  const grid = document.getElementById("scenarioGrid");
+  grid.innerHTML = "";
+  state.scenario.battles.forEach((b) => {
+    const tile = document.createElement("div");
+    tile.className = "scenario-tile";
+    tile.style.backgroundImage = `url("assets/scenes/battle_${b.scene}.png")`;
+    const done = b.cleared_count;
+    tile.innerHTML = `
+      <div class="scenario-tile-body">
+        <div class="scenario-tile-year">${b.year}년</div>
+        <div class="scenario-tile-name">${b.name}</div>
+        <div class="scenario-tile-progress${done === MAX_STAGE_LEVEL ? " complete" : ""}">
+          ${"★".repeat(done)}${"☆".repeat(MAX_STAGE_LEVEL - done)} ${done}/${MAX_STAGE_LEVEL}
+        </div>
+      </div>`;
+    tile.addEventListener("click", () => openScenarioBattle(b.key));
+    grid.appendChild(tile);
+  });
+}
+
+function openScenarioBattle(key) {
+  const battle = state.scenario.battles.find((b) => b.key === key);
+  state.scenario.battle = battle;
+  state.scenario.level = null;
+  document.getElementById("stageTitle").textContent = `${battle.name} (${battle.year}년)`;
+  document.getElementById("stageIntro").textContent = battle.intro;
+  document.getElementById("stageDetail").classList.add("hidden");
+  renderStageLevels();
+  showScreen("scenario-stage");
+}
+
+function renderStageLevels() {
+  const el = document.getElementById("stageLevels");
+  el.innerHTML = "";
+  state.scenario.battle.levels.forEach((lv) => {
+    const btn = document.createElement("button");
+    const picked = state.scenario.level === lv.level;
+    btn.className = "stage-level"
+      + (lv.unlocked ? "" : " locked")
+      + (lv.cleared ? " cleared" : "")
+      + (picked ? " picked" : "");
+    btn.disabled = !lv.unlocked;
+    btn.innerHTML = `<span class="stage-level-no">Lv${lv.level}</span>`
+      + `<span class="stage-level-mark">${lv.unlocked ? (lv.cleared ? "★" : "") : "🔒"}</span>`;
+    btn.addEventListener("click", () => openStageLevel(lv.level));
+    el.appendChild(btn);
+  });
+}
+
+async function openStageLevel(level) {
+  const key = state.scenario.battle.key;
+  const detail = await api(`/scenario/battles/${key}/levels/${level}?player_id=${state.playerId}`);
+  state.scenario.level = level;
+  state.scenario.detail = detail;
+  renderStageLevels();
+
+  const lineupHtml = (cards) => cards.map((c) => `
+    <div class="stage-card rarity-${c.rarity}">
+      <img src="${portraitSrc(c.name)}" alt=""
+           onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
+      <div class="stage-card-name">${c.name}</div>
+      <div class="stage-card-rarity">${c.rarity}</div>
+    </div>`).join("");
+  document.getElementById("stageEnemy").innerHTML = lineupHtml(detail.enemy);
+  document.getElementById("stageFixed").innerHTML = lineupHtml(detail.fixed_deck);
+
+  const reward = (mode) => {
+    const r = detail.rewards[mode];
+    return r.already_cleared
+      ? `${r.clear}링`
+      : `<b>${r.first_clear}링</b> <span class="first-clear-tag">최초 클리어</span>`;
+  };
+  document.getElementById("stageRewards").innerHTML =
+    `보상 — 내 덱 ${reward("own")} · 고정덱 ${reward("fixed")}`
+    + ` <span class="hint-inline">(패배해도 ${detail.lose_reward}링)</span>`;
+
+  document.getElementById("stageDetail").classList.remove("hidden");
+}
+
+async function startStage(deckMode) {
+  const { battle, level } = state.scenario;
+  try {
+    const res = await api(`/rooms/${state.roomCode}/scenario`, {
+      method: "POST",
+      body: JSON.stringify({ battle_key: battle.key, level, deck_mode: deckMode }),
+    });
+    state.scenario.deckMode = deckMode;
+    if (!res.needs_deck) return;              // 고정덱 - 서버가 바로 전투를 띄운다
+
+    if (state.selectedDeck.length === 5) {
+      state.ws?.send(JSON.stringify({ type: "submit_deck", deck: state.selectedDeck }));
+      return;
+    }
+    // 덱이 아직 없으면 편성 화면으로 보낸다. 거기서 제출하면 전투가 시작된다.
+    await Promise.all([loadCollection(), loadGachaInfo()]);
+    const hint = document.getElementById("deckHint");
+    hint.textContent = `${battle.name} Lv${level} — 덱 5장을 골라 제출하면 전투가 시작됩니다.`;
+    hint.classList.remove("hidden");
+    showScreen("cards");
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// 전투/덱 화면에서 "돌아가기"를 눌렀을 때 갈 곳. 시나리오는 로비가 아니라
+// 전투 목록으로 돌아가고, 진행도(해금·클리어 별)를 새로 받아온다.
+async function leaveToHome() {
+  document.getElementById("deckHint").classList.add("hidden");
+  if (state.mode === "scenario") {
+    await openScenarioList();
+  } else {
+    showScreen("lobby");
+  }
+}
+
+document.getElementById("btnStageOwn").addEventListener("click", () => startStage("own"));
+document.getElementById("btnStageFixed").addEventListener("click", () => startStage("fixed"));
+document.getElementById("btnStageBack").addEventListener("click", () => openScenarioList());
+document.getElementById("btnScenarioExit").addEventListener("click", () => showScreen("lobby"));
+document.getElementById("btnScenarioCards").addEventListener("click", async () => {
+  await Promise.all([loadCollection(), loadGachaInfo()]);
+  showScreen("cards");
+});
 
 // ---------------------------------------------------------------------------
 // 참가 가능한 방 목록
@@ -265,7 +434,7 @@ document.getElementById("btnGoCards").addEventListener("click", async () => {
 });
 
 document.getElementById("btnCardsBack").addEventListener("click", () => {
-  showScreen("lobby");
+  leaveToHome();
 });
 
 // ---------------------------------------------------------------------------
@@ -551,6 +720,8 @@ function toggleCardSelection(playerCardId, tile) {
 document.getElementById("btnSubmitDeck").addEventListener("click", () => {
   if (state.selectedDeck.length !== 5) return;
   state.ws?.send(JSON.stringify({ type: "submit_deck", deck: state.selectedDeck }));
+  document.getElementById("deckHint").classList.add("hidden");
+  if (state.mode === "scenario") return;   // 곧 battle_start 가 와서 전투 화면으로 바뀐다
   document.getElementById("lobbyStatus").textContent = "덱을 제출했습니다. 상대를 기다리는 중...";
   showScreen("lobby");
 });
@@ -1156,7 +1327,7 @@ function appendDmLogLine(text, cls) {
 }
 
 document.getElementById("btnDmBack").addEventListener("click", () => {
-  showScreen("lobby");
+  leaveToHome();
 });
 
 function applyBattleEvent(ev) {
@@ -1322,9 +1493,21 @@ function maybeShowBattleResult() {
   const byDeathmatch = data.decision === "deathmatch";
   const winLabel = byDeathmatch ? "일기토 승자" : "승자";
   const resultLine = `🏆 ${winLabel}: ${data.winner_nickname}`;
-  const ringLine = data.rings_earned
-    ? `${data.player_a} +${data.rings_earned.A}링 · ${data.player_b} +${data.rings_earned.B}링`
-    : null;
+
+  // 시나리오는 상대(AI) 보상이 없고, 최초 클리어 보너스가 붙는다
+  let ringLine;
+  if (data.scenario) {
+    const s = data.scenario;
+    const mode = s.deck_mode === "fixed" ? "고정덱" : "내 덱";
+    ringLine = s.cleared
+      ? `${s.stage_name} 클리어! (${mode}) +${s.rings}링`
+        + (s.first_clear ? "  ✨ 최초 클리어 보너스" : "")
+      : `${s.stage_name} 실패… (${mode}) +${s.rings}링`;
+  } else if (data.rings_earned) {
+    ringLine = `${data.player_a} +${data.rings_earned.A}링 · ${data.player_b} +${data.rings_earned.B}링`;
+  } else {
+    ringLine = null;
+  }
 
   if (byDeathmatch) {
     document.getElementById("dmEventText").textContent = resultLine;
@@ -1347,5 +1530,5 @@ document.getElementById("btnBattleSkip").addEventListener("click", () => {
 });
 
 document.getElementById("btnBattleBack").addEventListener("click", () => {
-  showScreen("lobby");
+  leaveToHome();
 });
