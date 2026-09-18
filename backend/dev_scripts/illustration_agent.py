@@ -233,15 +233,15 @@ def main() -> None:
 
     done = 0
     for entry in targets:
-        name, faction, rarity, archetype = entry[0], entry[1], entry[2], entry[3]
-        skill_name, skill_desc = entry[4], entry[5]
+        name, faction, archetype = entry[0], entry[1], entry[2]
+        skill_name, skill_desc = entry[3], entry[4]
 
         if not args.force and manifest.get(name) == "ai":
             continue
         if args.limit and done >= args.limit:
             break
 
-        print(f"[{name}] ({faction}/{rarity}/{archetype}) 생성 중...")
+        print(f"[{name}] ({faction}/{archetype}) 생성 중...")
         result = generate_general_portrait(client, name, faction, archetype, skill_name, skill_desc)
         manifest[name] = result
         _save_manifest(manifest)

@@ -237,7 +237,7 @@ document.getElementById("btnCloseShop").addEventListener("click", () => {
 // 뽑기
 // ---------------------------------------------------------------------------
 
-const RARITY_ORDER = { 일반: 0, 희귀: 1, 영웅: 2, 전설: 3 };
+const RARITY_ORDER = { E: 0, D: 1, C: 2, B: 3, A: 4, S: 5 };
 
 document.getElementById("btnDraw").addEventListener("click", async () => {
   try {

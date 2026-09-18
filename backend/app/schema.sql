@@ -1,6 +1,7 @@
 -- 장수 원본 정보 (이름, 소속, 고유 스킬)
 -- 고유 스킬은 텍스트 설명과 별개로 전투 엔진이 실제로 해석할 수 있는
--- 효과 메타데이터(skill_effect_type/scope/stat/potency)를 함께 가진다.
+-- 효과 메타데이터(skill_effect_type/scope/stat)를 함께 가진다.
+-- 스킬 위력(potency)은 등급마다 달라지므로 general_cards 쪽에 둔다.
 CREATE TABLE IF NOT EXISTS generals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -9,15 +10,14 @@ CREATE TABLE IF NOT EXISTS generals (
     skill_description TEXT NOT NULL,
     skill_effect_type TEXT NOT NULL CHECK (skill_effect_type IN ('damage', 'heal', 'buff', 'debuff')),
     skill_scope TEXT NOT NULL CHECK (skill_scope IN ('enemy', 'enemy_team', 'self', 'team')),
-    skill_stat TEXT CHECK (skill_stat IN ('atk', 'def', 'acc', 'hp', 'mp')),
-    skill_potency INTEGER NOT NULL
+    skill_stat TEXT CHECK (skill_stat IN ('atk', 'def', 'acc', 'hp', 'mp'))
 );
 
--- 장수의 등급별 카드 (같은 장수라도 등급마다 스탯이 다름)
+-- 장수의 등급별 카드 (모든 장수가 S/A/B/C/D/E 6개 등급 카드를 각각 가짐)
 CREATE TABLE IF NOT EXISTS general_cards (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     general_id INTEGER NOT NULL REFERENCES generals(id),
-    rarity TEXT NOT NULL CHECK (rarity IN ('일반', '희귀', '영웅', '전설')),
+    rarity TEXT NOT NULL CHECK (rarity IN ('S', 'A', 'B', 'C', 'D', 'E')),
     hp INTEGER NOT NULL,
     mp INTEGER NOT NULL,
     atk INTEGER NOT NULL,
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS general_cards (
     leadership INTEGER NOT NULL,
     charm INTEGER NOT NULL,
     politics INTEGER NOT NULL,
+    skill_potency INTEGER NOT NULL,
     UNIQUE(general_id, rarity)
 );
 

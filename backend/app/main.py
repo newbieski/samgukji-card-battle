@@ -167,7 +167,7 @@ def _load_deck(conn, player_card_ids: list[int]):
         row = conn.execute(
             "SELECT pc.enhance_level, gc.*, "
             "g.name, g.skill_name, g.skill_description, "
-            "g.skill_effect_type, g.skill_scope, g.skill_stat, g.skill_potency "
+            "g.skill_effect_type, g.skill_scope, g.skill_stat "
             "FROM player_cards pc "
             "JOIN general_cards gc ON gc.id = pc.general_card_id "
             "JOIN generals g ON g.id = gc.general_id "

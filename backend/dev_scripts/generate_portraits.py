@@ -141,7 +141,7 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     for entry in GENERALS:
-        name, faction, rarity, archetype = entry[0], entry[1], entry[2], entry[3]
+        name, faction, archetype = entry[0], entry[1], entry[2]
         grid = build_grid(name, faction, archetype)
         img = render(grid)
         img.save(OUT_DIR / f"{name}.png")
