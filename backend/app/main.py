@@ -523,5 +523,16 @@ async def room_websocket(websocket: WebSocket, room_code: str, player_id: int):
 # 프론트엔드 정적 파일 서빙 (반드시 API 라우트들보다 아래에 위치)
 # ---------------------------------------------------------------------------
 
+class NoCacheStaticFiles(StaticFiles):
+    """개발 중에는 브라우저가 옛날 app.js/style.css를 계속 들고 있어서 수정이 반영이
+    안 된 것처럼 보이는 일이 잦다. no-cache를 붙여 매번 서버에 물어보게 한다
+    (내용이 그대로면 304로 끝나서 비용은 거의 없다)."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+app.mount("/", NoCacheStaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
