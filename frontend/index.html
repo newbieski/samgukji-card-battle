@@ -109,14 +109,21 @@
 
       <div class="gacha-bar">
         <div class="gacha-controls">
-          <p class="hint no-margin">1회 100링 · 일반60% / 희귀30% / 영웅8% / 전설2%</p>
+          <p id="gachaRates" class="hint no-margin">확률 불러오는 중...</p>
           <div class="btn-row">
-            <button id="btnDraw" class="btn btn-primary">뽑기 (100링)</button>
+            <button id="btnDraw" class="btn btn-primary">뽑기</button>
+            <button id="btnDrawMulti" class="btn btn-primary">패키지 뽑기</button>
           </div>
+          <p id="gachaMultiHint" class="hint"></p>
         </div>
         <div id="drawResult" class="draw-result hidden">
           <div id="drawCard" class="card card-compact"></div>
         </div>
+      </div>
+
+      <div id="multiDrawResult" class="multi-draw-result hidden">
+        <p class="hint" id="multiDrawTitle"></p>
+        <div id="multiDrawGrid" class="multi-draw-grid"></div>
       </div>
 
       <p class="hint">덱으로 쓸 장수 5명을 선택하세요 (<span id="deckCount">0</span>/5)</p>

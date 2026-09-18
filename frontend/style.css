@@ -1133,6 +1133,35 @@ input[type="text"] {
   margin-top: 0;
 }
 
+/* 패키지 뽑기 결과 */
+.multi-draw-result {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 2px dashed var(--panel-border);
+}
+
+.multi-draw-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.multi-draw-card {
+  cursor: default;
+  font-size: 8px;
+}
+
+.bonus-tag {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 4;
+  padding: 1px 5px;
+  font-size: 8px;
+  background: var(--accent);
+  color: #1b1330;
+}
+
 .card-compact {
   padding: 10px;
 }

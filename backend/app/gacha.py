@@ -19,6 +19,12 @@ RARITY_RATES = {
 
 GACHA_COST = 100
 
+# 패키지 뽑기: 10장 값을 내면 한 장을 덤으로 더 뽑는다.
+MULTI_DRAW_PAID = 10
+MULTI_DRAW_BONUS = 1
+MULTI_DRAW_COST = GACHA_COST * MULTI_DRAW_PAID
+MULTI_DRAW_TOTAL = MULTI_DRAW_PAID + MULTI_DRAW_BONUS
+
 
 def draw_rarity() -> str:
     rarities = list(RARITY_RATES.keys())

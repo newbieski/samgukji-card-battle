@@ -8,7 +8,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from db import get_connection, init_db
-from gacha import GACHA_COST, perform_draw
+from gacha import (
+    GACHA_COST, MULTI_DRAW_BONUS, MULTI_DRAW_COST, MULTI_DRAW_PAID,
+    MULTI_DRAW_TOTAL, RARITY_RATES, perform_draw,
+)
 from battle import build_battle_card, card_snapshot, run_team_battle, skill_summary
 from rooms import manager as room_manager, RoomPlayer, Room, MAX_PLAYERS_PER_ROOM
 
@@ -133,32 +136,25 @@ def purchase_rings(player_id: int, req: PurchaseRingsRequest):
     }
 
 
-@app.post("/gacha/draw")
-def gacha_draw(player_id: int):
-    conn = get_connection()
-    player = conn.execute("SELECT * FROM players WHERE id = ?", (player_id,)).fetchone()
-    if player is None:
-        conn.close()
-        raise HTTPException(status_code=404, detail="플레이어를 찾을 수 없습니다.")
-    if player["rings"] < GACHA_COST:
-        conn.close()
-        raise HTTPException(status_code=400, detail="링이 부족합니다.")
+@app.get("/gacha/info")
+def gacha_info():
+    """뽑기 비용/확률/패키지 구성. 프론트가 하드코딩하지 않고 여기서 받아 쓴다."""
+    return {
+        "cost": GACHA_COST,
+        "rates": [
+            {"rarity": rarity, "percent": round(rate * 100, 2)}
+            for rarity, rate in sorted(RARITY_RATES.items(), key=lambda kv: kv[1])
+        ],
+        "multi": {
+            "paid": MULTI_DRAW_PAID,
+            "bonus": MULTI_DRAW_BONUS,
+            "total": MULTI_DRAW_TOTAL,
+            "cost": MULTI_DRAW_COST,
+        },
+    }
 
-    card = perform_draw(conn)
 
-    conn.execute(
-        "UPDATE players SET rings = rings - ? WHERE id = ?",
-        (GACHA_COST, player_id),
-    )
-    conn.execute(
-        "INSERT INTO player_cards (player_id, general_card_id) VALUES (?, ?)",
-        (player_id, card["id"]),
-    )
-    conn.commit()
-
-    remaining = conn.execute("SELECT rings FROM players WHERE id = ?", (player_id,)).fetchone()["rings"]
-    conn.close()
-
+def _draw_payload(card) -> dict:
     return {
         "general_name": card["name"],
         "faction": card["faction"],
@@ -180,6 +176,51 @@ def gacha_draw(player_id: int):
             "charm": card["charm"],
             "politics": card["politics"],
         },
+    }
+
+
+def _spend_and_draw(player_id: int, cost: int, draw_count: int) -> tuple[list[dict], int]:
+    """링을 먼저 차감하고 draw_count장을 뽑아 보유 카드에 넣는다."""
+    conn = get_connection()
+    player = conn.execute("SELECT * FROM players WHERE id = ?", (player_id,)).fetchone()
+    if player is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="플레이어를 찾을 수 없습니다.")
+    if player["rings"] < cost:
+        conn.close()
+        raise HTTPException(status_code=400, detail="링이 부족합니다.")
+
+    conn.execute("UPDATE players SET rings = rings - ? WHERE id = ?", (cost, player_id))
+
+    drawn = []
+    for _ in range(draw_count):
+        card = perform_draw(conn)
+        conn.execute(
+            "INSERT INTO player_cards (player_id, general_card_id) VALUES (?, ?)",
+            (player_id, card["id"]),
+        )
+        drawn.append(_draw_payload(card))
+
+    conn.commit()
+    remaining = conn.execute("SELECT rings FROM players WHERE id = ?", (player_id,)).fetchone()["rings"]
+    conn.close()
+    return drawn, remaining
+
+
+@app.post("/gacha/draw")
+def gacha_draw(player_id: int):
+    drawn, remaining = _spend_and_draw(player_id, GACHA_COST, 1)
+    return {**drawn[0], "remaining_rings": remaining}
+
+
+@app.post("/gacha/draw_multi")
+def gacha_draw_multi(player_id: int):
+    """패키지 뽑기 - 10장 값으로 11장을 뽑는다."""
+    drawn, remaining = _spend_and_draw(player_id, MULTI_DRAW_COST, MULTI_DRAW_TOTAL)
+    return {
+        "cards": drawn,
+        "paid": MULTI_DRAW_PAID,
+        "bonus": MULTI_DRAW_BONUS,
         "remaining_rings": remaining,
     }
 

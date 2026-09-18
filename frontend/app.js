@@ -232,7 +232,7 @@ document.getElementById("chkAutoTarget").addEventListener("change", (e) => {
 });
 
 document.getElementById("btnGoCards").addEventListener("click", async () => {
-  await loadCollection();
+  await Promise.all([loadCollection(), loadGachaInfo()]);
   showScreen("cards");
 });
 
@@ -329,17 +329,81 @@ document.getElementById("btnCloseShop").addEventListener("click", () => {
 
 const RARITY_ORDER = { E: 0, D: 1, C: 2, B: 3, A: 4, S: 5 };
 
+// 뽑기 비용/확률은 서버에서 받아온다 (하드코딩해두면 밸런스 바뀔 때 어긋난다)
+async function loadGachaInfo() {
+  try {
+    const info = await api("/gacha/info");
+    state.gachaInfo = info;
+    const rates = info.rates
+      .slice()
+      .sort((a, b) => RARITY_ORDER[b.rarity] - RARITY_ORDER[a.rarity])
+      .map((r) => `${r.rarity} ${r.percent}%`)
+      .join(" / ");
+    document.getElementById("gachaRates").textContent = `1회 ${info.cost}링 · ${rates}`;
+    document.getElementById("btnDraw").textContent = `뽑기 (${info.cost}링)`;
+    document.getElementById("btnDrawMulti").textContent =
+      `패키지 뽑기 (${info.multi.cost}링)`;
+    document.getElementById("gachaMultiHint").textContent =
+      `패키지: ${info.multi.paid}장 값으로 ${info.multi.total}장 (+${info.multi.bonus}장 덤)`;
+  } catch (e) {
+    document.getElementById("gachaRates").textContent = "확률 정보를 불러오지 못했습니다.";
+  }
+}
+
 document.getElementById("btnDraw").addEventListener("click", async () => {
   try {
     const result = await api(`/gacha/draw?player_id=${state.playerId}`, { method: "POST" });
     state.rings = result.remaining_rings;
     updatePlayerInfoBar();
+    document.getElementById("multiDrawResult").classList.add("hidden");
     renderDrawResult(result);
     await loadCollection();
   } catch (e) {
     alert(e.message);
   }
 });
+
+document.getElementById("btnDrawMulti").addEventListener("click", async () => {
+  try {
+    const result = await api(`/gacha/draw_multi?player_id=${state.playerId}`, { method: "POST" });
+    state.rings = result.remaining_rings;
+    updatePlayerInfoBar();
+    document.getElementById("drawResult").classList.add("hidden");
+    renderMultiDrawResult(result);
+    await loadCollection();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+function renderMultiDrawResult(result) {
+  const box = document.getElementById("multiDrawResult");
+  const grid = document.getElementById("multiDrawGrid");
+  const best = result.cards.reduce(
+    (top, c) => (RARITY_ORDER[c.rarity] > RARITY_ORDER[top.rarity] ? c : top),
+    result.cards[0],
+  );
+  document.getElementById("multiDrawTitle").textContent =
+    `패키지 뽑기 결과 ${result.cards.length}장 (${result.paid}장 + 덤 ${result.bonus}장) · 최고 등급 ${best.rarity} ${best.general_name}`;
+
+  grid.innerHTML = result.cards
+    .map((c, i) => {
+      const role = skillRole(c.skill_effect_type);
+      const isBonus = i >= result.paid;
+      return `
+        <div class="multi-draw-card card-tile rarity-${c.rarity}">
+          ${rarityBadgesHtml(c.rarity)}
+          ${isBonus ? `<div class="bonus-tag">덤</div>` : ""}
+          <img class="tile-portrait" src="${portraitSrc(c.general_name)}" alt="${c.general_name}"
+               onerror="this.onerror=null;this.src='${FALLBACK_PORTRAIT}';">
+          <div class="name">${c.general_name}</div>
+          <div>${c.faction} · <span class="tile-role">${role.icon} ${role.label}</span></div>
+          <div class="tile-skill">${role.icon} ${c.skill_name}</div>
+        </div>`;
+    })
+    .join("");
+  box.classList.remove("hidden");
+}
 
 const FALLBACK_PORTRAIT = "assets/portraits/_unknown.png";
 
